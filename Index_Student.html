@@ -1,107 +1,37 @@
 <!DOCTYPE html>
-<html>
+<html lang="ja">
 <head>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<style>
-  body { font-family:"Segoe UI",sans-serif; margin:20px; background:#f9f9f9; color:#333; }
-  h2 { text-align:center; margin-bottom:20px; }
-  .controls { display:flex; gap:15px; flex-wrap:wrap; background:#fff; padding:15px; border-radius:8px; box-shadow:0 2px 6px rgba(0,0,0,0.1); margin-bottom:20px; align-items:center; }
-  label { font-size:14px; font-weight:bold; display:flex; align-items:center; gap:6px; }
-  button { background:#007bff; border:none; border-radius:5px; color:white; padding:8px 14px; cursor:pointer; font-size:14px; }
-  button:hover { background:#0056b3; }
-  select { padding:6px 10px; border:1px solid #ccc; border-radius:4px; font-size:14px; }
-  table { border-collapse:collapse; width:100%; background:white; border-radius:8px; overflow:hidden; box-shadow:0 2px 6px rgba(0,0,0,0.1); }
-  th, td { border:1px solid #e0e0e0; padding:8px; text-align:center; font-size:14px; }
-  th { background:#555; color:white; font-weight:bold; }
-  .unsubmitted-row td { background-color:#ffe5e5; }
-</style>
+  <base target="_top">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    :root{--blue:#2563eb;--ink:#172033;--muted:#64748b;--line:#dbe3ef;--green:#059669;--red:#dc2626}
+    *{box-sizing:border-box}body{margin:0;background:linear-gradient(135deg,#f8fbff,#eef4fb);font-family:"Segoe UI","Noto Sans JP",sans-serif;color:var(--ink)}
+    header{background:rgba(255,255,255,.92);border-bottom:1px solid var(--line);padding:13px 18px}.head{max-width:900px;margin:auto;display:flex;align-items:center;gap:11px}.logo{width:42px;height:42px;border-radius:13px;display:grid;place-items:center;color:white;background:linear-gradient(135deg,#3b82f6,#1d4ed8);font-size:22px}.head h1{font-size:18px;margin:0}.head p{font-size:12px;color:var(--muted);margin:2px 0 0}
+    main{max-width:900px;margin:auto;padding:22px 16px 40px}.welcome{margin-bottom:18px}.welcome h2{margin:0;font-size:24px}.welcome p{margin:5px 0;color:var(--muted)}
+    .summary{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:15px}.stat,.card{background:white;border:1px solid var(--line);border-radius:18px;box-shadow:0 12px 32px rgba(30,64,175,.08)}.stat{padding:18px}.stat small{color:var(--muted);font-weight:700}.stat strong{display:block;font-size:30px;margin-top:5px}.stat strong span{font-size:14px;color:var(--muted)}
+    .card{padding:17px}.controls{display:flex;gap:10px;align-items:end;margin-bottom:14px}.field{flex:1}.field label{display:block;font-size:12px;font-weight:800;color:#475569;margin-bottom:5px}select,button{min-height:42px;border-radius:10px;font:inherit}select{width:100%;border:1px solid #cbd5e1;background:white;padding:8px 10px}button{border:0;padding:9px 14px;font-weight:800;cursor:pointer;background:#eff6ff;color:var(--blue)}button.active{background:var(--blue);color:white}
+    .item{display:grid;grid-template-columns:90px 1fr auto;gap:12px;align-items:center;padding:14px 4px;border-bottom:1px solid #edf2f7}.item:last-child{border:0}.date{color:var(--muted);font-size:13px}.task{font-weight:800}.badge{padding:5px 10px;border-radius:999px;font-size:12px;font-weight:900}.done{background:#dcfce7;color:#047857}.missing{background:#ffe4e6;color:#be123c}.empty{text-align:center;color:var(--muted);padding:38px 12px}
+    @media(max-width:600px){main{padding:17px 12px}.welcome h2{font-size:21px}.controls{align-items:stretch;flex-direction:column}.controls button{width:100%}.item{grid-template-columns:72px 1fr}.item .badge{grid-column:2;justify-self:start}.card{padding:13px}}
+  </style>
 </head>
 <body>
-<h2>📘 提出状況確認アプリ（児童・保護者用）</h2>
-
-<div class="controls">
-  <button onclick="toggleFilter()">未提出のみ/すべて表示</button>
-  <label>日付:
-    <select id="dateFilter" onchange="applyFilters()"><option value="">すべて</option></select>
-  </label>
-</div>
-
-<table id="statusTable">
-  <thead>
-    <tr>
-      <th>日付</th>
-      <th>名前</th>
-      <th>課題</th>
-      <th>提出状況</th>
-    </tr>
-  </thead>
-  <tbody></tbody>
-</table>
-
+<header><div class="head"><div class="logo">✓</div><div><h1>Homework Check</h1><p>自分の提出状況</p></div></div></header>
+<main>
+  <div class="welcome"><h2>提出物を確認しよう</h2><p>「未提出」が残っていないか確認できます。</p></div>
+  <div class="summary"><div class="stat"><small>提出済み</small><strong id="doneCount">0<span>件</span></strong></div><div class="stat"><small>未提出</small><strong id="missingCount">0<span>件</span></strong></div></div>
+  <div class="card"><div class="controls"><div class="field"><label>日付で絞り込み</label><select id="dateFilter" onchange="render()"><option value="">すべての日付</option></select></div><button id="missingBtn" onclick="toggleMissing()">未提出だけ表示</button></div><div id="list"></div></div>
+</main>
 <script>
-const fullData = JSON.parse('<?= dataJSON ?>');
-const childBarcode = '<?= childBarcode ?>';
-let filtered = false;
-
-function render(data){
-  const tbody = document.querySelector("#statusTable tbody");
-  tbody.innerHTML = "";
-  data.forEach(row=>{
-    const tr = document.createElement("tr");
-    if(row[6]==="未") tr.classList.add("unsubmitted-row");
-
-    // 日付
-    const d = new Date(row[0]);
-    const dateText = !isNaN(d)?`${d.getMonth()+1}月${d.getDate()}日`:row[0];
-    const tdDate = document.createElement("td"); tdDate.textContent=dateText; tr.appendChild(tdDate);
-
-    // 名前
-    const tdName = document.createElement("td"); tdName.textContent=row[4]; tr.appendChild(tdName);
-
-    // 課題
-    const tdTask = document.createElement("td"); tdTask.textContent=row[5]; tr.appendChild(tdTask);
-
-    // 提出状況
-    const tdStatus = document.createElement("td"); tdStatus.textContent=row[6]; tr.appendChild(tdStatus);
-
-    tbody.appendChild(tr);
-  });
-}
-
-function toggleFilter(){ filtered=!filtered; applyFilters(); }
-
-function applyFilters(){
-  let data = fullData.filter(r=>String(r[3])===childBarcode);
-  if(filtered) data = data.filter(r=>r[6]!=="〇");
-
-  const dateVal = document.getElementById("dateFilter").value;
-  if(dateVal) data = data.filter(r=>{
-    const d = new Date(r[0]);
-    const formatted = !isNaN(d)?`${d.getMonth()+1}月${d.getDate()}日`:r[0];
-    return formatted===dateVal;
-  });
-
-  render(data);
-}
-
-function initDateFilter(){
-  const dateSet = new Set();
-  fullData.filter(r=>String(r[3])===childBarcode).forEach(r=>{
-    const d = new Date(r[0]);
-    dateSet.add(!isNaN(d)?`${d.getMonth()+1}月${d.getDate()}日`:r[0]);
-  });
-
-  const dateFilter = document.getElementById("dateFilter");
-  Array.from(dateSet).sort().forEach(date=>{
-    const opt = document.createElement("option");
-    opt.value = date;
-    opt.textContent = date;
-    dateFilter.appendChild(opt);
-  });
-}
-
-initDateFilter();
-applyFilters();
+const fullData=<?!= dataJSON ?>;
+const childBarcode=<?= JSON.stringify(childBarcode) ?>;
+let onlyMissing=false;
+function formatDate(raw){const d=new Date(raw);return isNaN(d)?String(raw):`${d.getMonth()+1}月${d.getDate()}日`}
+function esc(v){const d=document.createElement('div');d.textContent=v==null?'':v;return d.innerHTML}
+function ownRows(){return fullData.filter(r=>String(r[3])===String(childBarcode))}
+function init(){const dates=[...new Set(ownRows().map(r=>formatDate(r[0])))];dates.forEach(x=>{const o=document.createElement('option');o.value=o.textContent=x;document.getElementById('dateFilter').appendChild(o)});render()}
+function toggleMissing(){onlyMissing=!onlyMissing;document.getElementById('missingBtn').classList.toggle('active',onlyMissing);document.getElementById('missingBtn').textContent=onlyMissing?'すべて表示':'未提出だけ表示';render()}
+function render(){const all=ownRows(),date=document.getElementById('dateFilter').value;let rows=all.filter(r=>!date||formatDate(r[0])===date);if(onlyMissing)rows=rows.filter(r=>r[6]!=='〇');document.getElementById('doneCount').firstChild.nodeValue=all.filter(r=>r[6]==='〇').length;document.getElementById('missingCount').firstChild.nodeValue=all.filter(r=>r[6]!=='〇').length;document.getElementById('list').innerHTML=rows.length?rows.map(r=>`<div class="item"><div class="date">${esc(formatDate(r[0]))}</div><div class="task">${esc(r[5])}</div><div class="badge ${r[6]==='〇'?'done':'missing'}">${r[6]==='〇'?'〇 提出済み':'未提出'}</div></div>`).join(''):`<div class="empty">${childBarcode?'表示する課題はありません':'アカウントと児童情報が連携されていません'}</div>`}
+init();
 </script>
 </body>
 </html>
