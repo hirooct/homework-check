@@ -1,140 +1,103 @@
 <!DOCTYPE html>
-<html>
+<html lang="ja">
 <head>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<style>
-body { font-family:"Segoe UI",sans-serif; margin:20px; background:#f9f9f9; color:#333; }
-h2 { text-align:center; margin-bottom:20px; }
-.controls { display:flex; gap:15px; flex-wrap:wrap; background:#fff; padding:15px; border-radius:8px; box-shadow:0 2px 6px rgba(0,0,0,0.1); margin-bottom:20px; align-items:center; }
-label { font-size:14px; font-weight:bold; display:flex; align-items:center; gap:6px; }
-button { background:#007bff; border:none; border-radius:5px; color:white; padding:8px 14px; cursor:pointer; font-size:14px; }
-button:hover { background:#0056b3; }
-select { padding:6px 10px; border:1px solid #ccc; border-radius:4px; font-size:14px; }
-table { border-collapse:collapse; width:100%; background:white; border-radius:8px; overflow:hidden; box-shadow:0 2px 6px rgba(0,0,0,0.1); }
-th, td { border:1px solid #e0e0e0; padding:8px; text-align:center; font-size:14px; }
-th { background:#555; color:white; font-weight:bold; }
-.unsubmitted-row td { background-color:#ffe5e5; }
-.submitted-row td { background-color:white; }
-</style>
+  <base target="_top">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <style>
+    :root{--blue:#2563eb;--blue2:#1d4ed8;--ink:#172033;--muted:#64748b;--line:#dbe3ef;--bg:#f3f7fc;--white:#fff;--green:#059669;--red:#dc2626;--amber:#d97706;--shadow:0 12px 32px rgba(30,64,175,.09)}
+    *{box-sizing:border-box} body{margin:0;background:linear-gradient(135deg,#f8fbff,#eef4fb);color:var(--ink);font-family:"Segoe UI","Noto Sans JP",sans-serif}
+    button,input,select{font:inherit} button{cursor:pointer}.hidden{display:none!important}
+    header{position:sticky;top:0;z-index:20;background:rgba(255,255,255,.92);backdrop-filter:blur(12px);border-bottom:1px solid var(--line)}
+    .head{max-width:1200px;margin:auto;min-height:68px;padding:10px 18px;display:flex;align-items:center;justify-content:space-between;gap:16px}
+    .brand{display:flex;align-items:center;gap:11px}.logo{width:42px;height:42px;border-radius:13px;display:grid;place-items:center;color:#fff;background:linear-gradient(135deg,#3b82f6,#1d4ed8);font-size:22px;box-shadow:0 7px 18px #bfdbfe}
+    .brand h1{font-size:18px;margin:0}.brand p{font-size:12px;color:var(--muted);margin:2px 0 0}.account{font-size:12px;color:var(--muted)}
+    .layout{max-width:1200px;margin:auto;padding:22px 18px 40px}.nav{display:flex;gap:8px;overflow:auto;padding:2px 0 18px;scrollbar-width:none}
+    .nav button{white-space:nowrap;border:1px solid var(--line);background:#fff;color:#475569;padding:10px 14px;border-radius:12px;font-weight:700}.nav button.active{background:var(--blue);border-color:var(--blue);color:#fff;box-shadow:0 6px 16px #bfdbfe}
+    .page{display:none}.page.active{display:block}.titleRow{display:flex;align-items:end;justify-content:space-between;gap:12px;margin-bottom:16px}.titleRow h2{font-size:24px;margin:0}.titleRow p{margin:4px 0 0;color:var(--muted);font-size:14px}
+    .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}.stat,.card{background:#fff;border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow)}.stat{padding:20px}.stat small{color:var(--muted);font-weight:700}.stat strong{display:block;font-size:32px;margin-top:7px}.stat strong span{font-size:15px;color:var(--muted);margin-left:3px}
+    .card{padding:20px;margin-bottom:15px}.card h3{margin:0 0 14px;font-size:17px}.empty{text-align:center;padding:38px 16px;color:var(--muted)}
+    .btn{border:0;border-radius:11px;padding:11px 16px;font-weight:800;background:var(--blue);color:#fff}.btn:hover{background:var(--blue2)}.btn.sub{background:#fff;color:var(--blue);border:1px solid #93b4fa}.btn.ghost{background:#f1f5f9;color:#475569}.btn.danger{background:#fff1f2;color:var(--red);border:1px solid #fecdd3}.btn:disabled{opacity:.45;cursor:not-allowed}
+    .formGrid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}.field label{display:block;font-size:13px;font-weight:800;margin-bottom:6px;color:#475569}.field input,.field select{width:100%;min-height:44px;border:1px solid #cbd5e1;border-radius:10px;padding:9px 11px;background:#fff}.field input:focus,.field select:focus{outline:3px solid #dbeafe;border-color:var(--blue)}.wide{grid-column:1/-1}.actions{display:flex;justify-content:flex-end;gap:9px;margin-top:16px;flex-wrap:wrap}
+    .assignment{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 0;border-bottom:1px solid #edf2f7}.assignment:last-child{border:0}.assignment b{display:block}.meta{font-size:13px;color:var(--muted);margin-top:4px}.badge{display:inline-flex;align-items:center;padding:4px 9px;border-radius:999px;font-size:12px;font-weight:800}.OPEN{background:#dcfce7;color:#047857}.DRAFT{background:#f1f5f9;color:#475569}.CLOSED{background:#fef3c7;color:#92400e}.ARCHIVED{background:#e2e8f0;color:#64748b}
+    .scanWrap{max-width:760px;margin:auto}.scanHero{text-align:center;padding:28px}.scanHero .icon{font-size:48px}.scanHero h3{font-size:23px;margin:8px 0}.scanInput{width:100%;height:72px;border:3px solid #93c5fd;border-radius:16px;text-align:center;font-size:28px;font-weight:800;letter-spacing:4px}.scanInput:focus{outline:5px solid #dbeafe;border-color:var(--blue)}.scanResult{min-height:110px;margin-top:15px;padding:18px;border-radius:16px;display:grid;place-items:center;text-align:center;background:#f8fafc;border:1px dashed #cbd5e1}.scanResult.ok{background:#ecfdf5;border:2px solid #6ee7b7;color:#065f46}.scanResult.ng{background:#fff1f2;border:2px solid #fda4af;color:#9f1239}.scanCount{display:flex;justify-content:center;gap:25px;margin:18px 0}.scanCount strong{font-size:30px}.scanCount span{display:block;font-size:12px;color:var(--muted)}
+    .tableWrap{overflow:auto;border:1px solid var(--line);border-radius:14px}table{width:100%;border-collapse:collapse;background:#fff;min-width:650px}th,td{padding:11px 12px;border-bottom:1px solid #e8eef6;text-align:left;font-size:14px}th{background:#f8fafc;color:#475569;font-size:12px;position:sticky;top:0}.statusDot{font-weight:800}.yes{color:var(--green)}.no{color:var(--red)}
+    .filters{display:grid;grid-template-columns:1fr auto;gap:10px;margin-bottom:13px}.toast{position:fixed;right:18px;bottom:18px;z-index:50;background:#172033;color:#fff;border-radius:12px;padding:13px 17px;box-shadow:0 12px 30px #94a3b8;max-width:360px}.overlay{position:fixed;inset:0;z-index:60;background:rgba(15,23,42,.42);display:grid;place-items:center;padding:18px}.modal{width:min(560px,100%);max-height:90vh;overflow:auto;background:#fff;border-radius:20px;padding:22px;box-shadow:0 25px 70px rgba(15,23,42,.28)}.modal h3{margin:0 0 16px}.setup{text-align:center;max-width:620px;margin:60px auto}.setup .logo{margin:auto;width:64px;height:64px;font-size:32px}
+    .loader{position:fixed;inset:0;z-index:100;background:rgba(255,255,255,.72);display:grid;place-items:center}.spinner{width:46px;height:46px;border:5px solid #dbeafe;border-top-color:var(--blue);border-radius:50%;animation:spin .75s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
+    @media(max-width:720px){.grid{grid-template-columns:1fr}.formGrid{grid-template-columns:1fr}.wide{grid-column:auto}.layout{padding:15px 12px 30px}.head{padding:9px 13px}.account{display:none}.titleRow{align-items:start;flex-direction:column}.titleRow h2{font-size:21px}.card{padding:15px}.assignment{align-items:flex-start;flex-direction:column}.assignment .actions{margin:0}.scanHero{padding:20px 12px}.scanInput{font-size:25px}.filters{grid-template-columns:1fr}}
+  </style>
 </head>
 <body>
-<h2>📘 提出状況確認アプリ（教師用）</h2>
+<header><div class="head"><div class="brand"><div class="logo">✓</div><div><h1>Homework Check</h1><p>提出物管理システム</p></div></div><div id="account" class="account"></div></div></header>
+<main class="layout">
+  <div id="setup" class="setup hidden"><div class="card"><div class="logo">✓</div><h2>はじめに初期設定をします</h2><p class="meta">既存データは削除しません。必要な管理シートを追加し、現在の児童データを取り込みます。</p><button class="btn" onclick="runSetup()">初期設定を実行</button></div></div>
+  <div id="app" class="hidden">
+    <nav class="nav">
+      <button class="active" data-page="dashboard">⌂ 今日の状況</button><button data-page="assignments">＋ 課題</button><button data-page="scan">▣ スキャン</button><button data-page="status">☷ 提出一覧</button><button data-page="students">♙ 児童</button>
+    </nav>
 
-<div class="controls">
-  <button onclick="toggleFilter()">未提出のみ/すべて表示</button>
-  <label>日付:
-    <select id="dateFilter" onchange="applyFilters()"><option value="">すべて</option></select>
-  </label>
-  <label>バーコード:
-    <select id="barcodeFilter" onchange="applyFilters()"><option value="">すべて</option></select>
-  </label>
-</div>
+    <section id="dashboard" class="page active"><div class="titleRow"><div><h2>今日の状況</h2><p>まず課題を登録し、バーコードを読み取ります。</p></div><button class="btn" onclick="openAssignmentModal()">＋ 課題を登録</button></div><div class="grid"><div class="stat"><small>登録児童</small><strong id="dStudents">0<span>人</span></strong></div><div class="stat"><small>受付中の課題</small><strong id="dOpen">0<span>件</span></strong></div><div class="stat"><small>今日の課題</small><strong id="dToday">0<span>件</span></strong></div></div><div class="card" style="margin-top:15px"><h3>受付中の課題</h3><div id="dashboardOpen"></div></div></section>
 
-<table id="statusTable">
-  <thead>
-    <tr>
-      <th>日付</th>
-      <th>学年</th>
-      <th>組</th>
-      <th>バーコード</th>
-      <th>名前</th>
-      <th>課題</th>
-      <th>提出状況</th>
-    </tr>
-  </thead>
-  <tbody></tbody>
-</table>
+    <section id="assignments" class="page"><div class="titleRow"><div><h2>課題管理</h2><p>提出日と対象クラスを設定します。</p></div><button class="btn" onclick="openAssignmentModal()">＋ 新しい課題</button></div><div class="card"><div id="assignmentList"></div></div></section>
 
+    <section id="scan" class="page"><div class="titleRow"><div><h2>バーコード読取</h2><p>課題を選んでから、児童のバーコードを連続して読み取ります。</p></div></div><div class="scanWrap"><div class="card scanHero"><div class="field"><label>受付する課題</label><select id="scanAssignment" onchange="loadScanStatus()"></select></div><div class="scanCount"><div><strong id="scanSubmitted">0</strong><span>提出済み</span></div><div><strong id="scanRemaining">0</strong><span>未提出</span></div></div><input id="scanInput" class="scanInput" inputmode="numeric" maxlength="4" autocomplete="off" placeholder="6301" aria-label="バーコード" onkeydown="scanKey(event)"><p class="meta">USBバーコードリーダー、または4桁の手入力＋Enterに対応</p><div id="scanResult" class="scanResult">バーコードを読み取ってください</div><div class="actions" style="justify-content:center"><button id="undoBtn" class="btn danger" onclick="undoLast()">↶ 直前の登録を取り消す</button><button class="btn ghost" onclick="focusScan()">入力欄に戻る</button></div></div></div></section>
+
+    <section id="status" class="page"><div class="titleRow"><div><h2>提出状況一覧</h2><p>課題ごとに、提出済み・未提出を確認できます。</p></div></div><div class="card"><div class="filters"><select id="statusAssignment" onchange="loadStatusTable()"></select><button class="btn ghost" onclick="loadStatusTable()">更新</button></div><div id="statusSummary" class="meta" style="margin-bottom:10px"></div><div class="tableWrap"><table><thead><tr><th>番号</th><th>バーコード</th><th>名前</th><th>提出状況</th><th>操作</th></tr></thead><tbody id="statusBody"></tbody></table></div></div></section>
+
+    <section id="students" class="page"><div class="titleRow"><div><h2>児童管理</h2><p>バーコードは「学年・組・出席番号」の4桁です。</p></div><button class="btn" onclick="openStudentModal()">＋ 児童を追加</button></div><div class="card"><div class="filters"><input id="studentSearch" placeholder="名前・バーコードで検索" oninput="renderStudents()"><button class="btn ghost" onclick="renderStudents()">検索</button></div><div class="tableWrap"><table><thead><tr><th>バーコード</th><th>学年・組・番号</th><th>名前</th><th>状態</th><th>操作</th></tr></thead><tbody id="studentBody"></tbody></table></div></div></section>
+  </div>
+</main>
+
+<div id="assignmentModal" class="overlay hidden"><div class="modal"><h3>新しい課題を登録</h3><div class="formGrid"><div class="field"><label>提出日</label><input id="aDate" type="date"></div><div class="field"><label>教科</label><select id="aSubject"><option>国語</option><option>算数</option><option>理科</option><option>社会</option><option>外国語</option><option>その他</option></select></div><div class="field wide"><label>課題名</label><input id="aTitle" placeholder="例：算数プリント No.12"></div><div class="field"><label>対象学年</label><select id="aGrade"></select></div><div class="field"><label>対象クラス</label><select id="aClass"></select></div><div class="field wide"><label>登録後の状態</label><select id="aStatus"><option value="OPEN">すぐに受付を開始</option><option value="DRAFT">準備中として保存</option></select></div></div><div class="actions"><button class="btn ghost" onclick="closeModal('assignmentModal')">キャンセル</button><button class="btn" onclick="saveAssignment()">登録する</button></div></div></div>
+
+<div id="studentModal" class="overlay hidden"><div class="modal"><h3>児童情報</h3><input id="sId" type="hidden"><div class="formGrid"><div class="field"><label>バーコード</label><input id="sBarcode" inputmode="numeric" maxlength="4" placeholder="6301"></div><div class="field"><label>名前</label><input id="sName"></div><div class="field"><label>学年</label><select id="sGrade"></select></div><div class="field"><label>組</label><select id="sClass"></select></div><div class="field"><label>出席番号</label><input id="sNumber" type="number" min="1" max="99"></div><div class="field"><label>状態</label><select id="sActive"><option value="true">在籍</option><option value="false">無効</option></select></div><div class="field wide"><label>児童メール（任意）</label><input id="sStudentEmail" type="email"></div><div class="field wide"><label>保護者メール（任意）</label><input id="sParentEmail" type="email"></div></div><div class="actions"><button class="btn ghost" onclick="closeModal('studentModal')">キャンセル</button><button class="btn" onclick="saveStudent()">保存する</button></div></div></div>
+
+<div id="loader" class="loader"><div class="spinner"></div></div><div id="toast" class="toast hidden"></div>
 <script>
-const fullData = JSON.parse('<?= dataJSON ?>'); // 1行目はヘッダ
-let filtered = false;
+let state={students:[],assignments:[],dashboard:{}};
+const $=id=>document.getElementById(id);
+document.querySelectorAll('.nav button').forEach(b=>b.onclick=()=>showPage(b.dataset.page));
+document.querySelectorAll('.overlay').forEach(x=>x.addEventListener('click',e=>{if(e.target===x)x.classList.add('hidden')}));
 
-function formatDate(raw){
-  const d = new Date(raw);
-  if(!isNaN(d)) return `${d.getMonth()+1}月${d.getDate()}日`;
-  return raw;
-}
+function server(fn,...args){return new Promise((resolve,reject)=>google.script.run.withSuccessHandler(resolve).withFailureHandler(e=>reject(new Error(e.message||e)))[fn](...args))}
+function loading(on){$('loader').classList.toggle('hidden',!on)}
+function toast(msg){$('toast').textContent=msg;$('toast').classList.remove('hidden');setTimeout(()=>$('toast').classList.add('hidden'),2600)}
+function fail(e){loading(false);toast(e.message||String(e))}
+function localDate(){const d=new Date(),z=new Date(d.getTime()-d.getTimezoneOffset()*60000);return z.toISOString().slice(0,10)}
+function esc(v){const d=document.createElement('div');d.textContent=v==null?'':v;return d.innerHTML}
+function statusLabel(v){return {OPEN:'受付中',DRAFT:'準備中',CLOSED:'受付終了',ARCHIVED:'保存済み'}[v]||v}
 
-function render(data){
-  const tbody = document.querySelector("#statusTable tbody");
-  tbody.innerHTML = "";
+async function boot(){loading(true);try{const x=await server('api_getBootstrap');$('account').textContent=x.email||'';if(!x.ready){$('setup').classList.remove('hidden')}else{state=x;$('app').classList.remove('hidden');renderAll()}}catch(e){fail(e)}finally{loading(false)}}
+async function runSetup(){loading(true);try{const r=await server('setupPhase1');toast(r.message);location.reload()}catch(e){fail(e)}}
+function showPage(id){document.querySelectorAll('.page').forEach(p=>p.classList.toggle('active',p.id===id));document.querySelectorAll('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.page===id));if(id==='scan')setTimeout(focusScan,100);if(id==='status')loadStatusTable()}
+function renderAll(){renderDashboard();renderAssignments();renderStudents();fillAssignmentSelects();fillNumberSelects()}
+function renderDashboard(){$('dStudents').firstChild.nodeValue=state.dashboard.studentCount;$('dOpen').firstChild.nodeValue=state.dashboard.openCount;$('dToday').firstChild.nodeValue=state.dashboard.todayCount;const open=state.assignments.filter(a=>a.status==='OPEN');$('dashboardOpen').innerHTML=open.length?open.slice(0,6).map(a=>assignmentHtml(a,true)).join(''):'<div class="empty">受付中の課題はありません</div>'}
+function assignmentHtml(a,compact){return `<div class="assignment"><div><b>${esc(a.title)} <span class="badge ${a.status}">${statusLabel(a.status)}</span></b><div class="meta">${esc(a.dateLabel)}　${esc(a.subject)}　${a.targetGrade}年${a.targetClass}組</div></div><div class="actions"><button class="btn sub" onclick="startScan('${a.assignmentId}')">スキャン</button>${compact?'':`<select onchange="changeAssignmentStatus('${a.assignmentId}',this.value)"><option value="OPEN" ${a.status==='OPEN'?'selected':''}>受付中</option><option value="DRAFT" ${a.status==='DRAFT'?'selected':''}>準備中</option><option value="CLOSED" ${a.status==='CLOSED'?'selected':''}>受付終了</option><option value="ARCHIVED" ${a.status==='ARCHIVED'?'selected':''}>保存済み</option></select>`}</div></div>`}
+function renderAssignments(){$('assignmentList').innerHTML=state.assignments.length?state.assignments.map(a=>assignmentHtml(a,false)).join(''):'<div class="empty">課題はまだありません</div>'}
+function fillAssignmentSelects(){const active=state.assignments.filter(a=>a.status!=='ARCHIVED'),options=active.map(a=>`<option value="${a.assignmentId}">${esc(a.dateLabel)}｜${esc(a.title)}｜${a.targetGrade}-${a.targetClass}</option>`).join('');$('statusAssignment').innerHTML=options||'<option value="">課題がありません</option>';const open=state.assignments.filter(a=>a.status==='OPEN');$('scanAssignment').innerHTML=open.map(a=>`<option value="${a.assignmentId}">${esc(a.dateLabel)}｜${esc(a.title)}｜${a.targetGrade}-${a.targetClass}</option>`).join('')||'<option value="">受付中の課題がありません</option>';loadScanStatus()}
+function fillNumberSelects(){for(const id of ['aGrade','sGrade'])$(id).innerHTML=[1,2,3,4,5,6].map(n=>`<option value="${n}" ${n===6?'selected':''}>${n}年</option>`).join('');for(const id of ['aClass','sClass'])$(id).innerHTML=[1,2,3,4,5,6].map(n=>`<option value="${n}" ${n===3?'selected':''}>${n}組</option>`).join('')}
 
-  data.forEach(row=>{
-    const tr = document.createElement("tr");
-    if(row[6]==="未") tr.classList.add("unsubmitted-row");
-    else tr.classList.add("submitted-row");
+function openAssignmentModal(){$('aDate').value=localDate();$('aTitle').value='';$('assignmentModal').classList.remove('hidden');setTimeout(()=>$('aTitle').focus(),100)}
+function closeModal(id){$(id).classList.add('hidden')}
+async function saveAssignment(){loading(true);try{await server('api_createAssignment',{date:$('aDate').value,subject:$('aSubject').value,title:$('aTitle').value,targetGrade:$('aGrade').value,targetClass:$('aClass').value,status:$('aStatus').value});closeModal('assignmentModal');await refresh();toast('課題を登録しました')}catch(e){fail(e)}finally{loading(false)}}
+async function changeAssignmentStatus(id,status){loading(true);try{await server('api_setAssignmentStatus',id,status);await refresh();toast('受付状態を変更しました')}catch(e){fail(e)}finally{loading(false)}}
+function startScan(id){showPage('scan');$('scanAssignment').value=id;loadScanStatus();focusScan()}
 
-    for(let i=0;i<6;i++){
-      const td = document.createElement("td");
-      td.textContent = (i===0)?formatDate(row[i]):row[i];
-      tr.appendChild(td);
-    }
+function scanKey(e){if(e.key==='Enter'){e.preventDefault();submitScan()}}
+function focusScan(){$('scanInput').focus();$('scanInput').select()}
+async function submitScan(){const assignmentId=$('scanAssignment').value,barcode=$('scanInput').value.trim();$('scanInput').value='';if(!assignmentId){showScanResult(false,'受付中の課題を選択してください');return}if(!barcode)return;try{const r=await server('api_scanSubmission',{assignmentId,barcode});showScanResult(r.success,r.message);if(r.success){$('scanSubmitted').textContent=r.count;await loadScanStatus(false)}}catch(e){showScanResult(false,e.message)}finally{focusScan()}}
+function showScanResult(ok,msg){const x=$('scanResult');x.className='scanResult '+(ok?'ok':'ng');x.innerHTML=`<div><strong style="font-size:20px">${ok?'✓ 登録完了':'! 確認してください'}</strong><br>${esc(msg)}</div>`;if(ok&&navigator.vibrate)navigator.vibrate(100)}
+async function loadScanStatus(reset=true){const id=$('scanAssignment').value;if(!id){$('scanSubmitted').textContent=0;$('scanRemaining').textContent=0;return}try{const r=await server('api_getAssignmentStatus',id);$('scanSubmitted').textContent=r.submitted;$('scanRemaining').textContent=r.total-r.submitted;if(reset){$('scanResult').className='scanResult';$('scanResult').textContent='バーコードを読み取ってください'}}catch(e){fail(e)}}
+async function undoLast(){const id=$('scanAssignment').value;if(!id)return;if(!confirm('直前に読み取った提出記録を取り消しますか？'))return;try{const r=await server('api_undoLastSubmission',id);showScanResult(r.success,r.message);await loadScanStatus(false)}catch(e){fail(e)}finally{focusScan()}}
 
-    const tdStatus = document.createElement("td");
-    const sel = document.createElement("select");
-    sel.innerHTML = `<option value="未" ${row[6]==="未"?"selected":""}>未</option>
-                     <option value="〇" ${row[6]==="〇"?"selected":""}>〇</option>`;
-    sel.onchange = ()=>updateStatusKey(row, sel);
-    tdStatus.appendChild(sel);
-    tr.appendChild(tdStatus);
+async function loadStatusTable(){const id=$('statusAssignment').value;if(!id){$('statusBody').innerHTML='';$('statusSummary').textContent='課題を登録してください';return}loading(true);try{const r=await server('api_getAssignmentStatus',id);$('statusSummary').textContent=`提出 ${r.submitted}人 ／ 未提出 ${r.total-r.submitted}人 ／ 対象 ${r.total}人`;$('statusBody').innerHTML=r.rows.map(s=>`<tr><td>${s.number}</td><td>${s.barcode}</td><td>${esc(s.name)}</td><td class="statusDot ${s.submitted?'yes':'no'}">${s.submitted?'〇 提出済み':'未提出'}</td><td>${s.submitted?`<button class="btn danger" onclick="manualUnset('${id}','${s.barcode}','${esc(s.name)}')">取消</button>`:`<button class="btn sub" onclick="manualSet('${id}','${s.barcode}')">提出にする</button>`}</td></tr>`).join('')}catch(e){fail(e)}finally{loading(false)}}
+async function manualSet(id,barcode){loading(true);try{const r=await server('api_setManualSubmission',{assignmentId:id,barcode,submitted:true});if(!r.success)throw new Error(r.message);await loadStatusTable();toast('提出済みに変更しました')}catch(e){fail(e)}finally{loading(false)}}
+async function manualUnset(id,barcode,name){const reason=prompt(`${name}さんを未提出に戻します。理由を入力してください。`);if(reason===null)return;if(!reason.trim()){toast('変更理由を入力してください');return}loading(true);try{await server('api_setManualSubmission',{assignmentId:id,barcode,submitted:false,reason});await loadStatusTable();toast('未提出に戻しました')}catch(e){fail(e)}finally{loading(false)}}
 
-    tbody.appendChild(tr);
-  });
-}
-
-function toggleFilter(){ filtered=!filtered; applyFilters(); }
-
-function applyFilters(){
-  let data = fullData.slice(1); // ヘッダ行無視
-  if(filtered) data = data.filter(r=>r[6]!=="〇");
-
-  const dateVal = document.getElementById("dateFilter").value;
-  if(dateVal) data = data.filter(r=>formatDate(r[0])===dateVal);
-
-  const barcodeVal = document.getElementById("barcodeFilter").value;
-  if(barcodeVal) data = data.filter(r=>String(r[3])===barcodeVal);
-
-  render(data);
-}
-
-function initFilters(){
-  const dateSet = new Set();
-  const barcodeSet = new Map();
-
-  fullData.slice(1).forEach(r=>{
-    dateSet.add(formatDate(r[0]));
-    barcodeSet.set(String(r[3]), r[4]);
-  });
-
-  const dateFilter = document.getElementById("dateFilter");
-  Array.from(dateSet).sort().forEach(d=>{
-    const opt = document.createElement("option"); opt.value=opt.textContent=d; dateFilter.appendChild(opt);
-  });
-
-  const barcodeFilter = document.getElementById("barcodeFilter");
-  barcodeSet.forEach((name,code)=>{
-    const opt = document.createElement("option"); opt.value=code; opt.textContent=`${code} (${name})`;
-    barcodeFilter.appendChild(opt);
-  });
-}
-
-function updateStatusKey(row, sel){
-  const status = sel.value;
-  const dateStr = formatDate(row[0]);
-
-  google.script.run.withSuccessHandler(resp=>{
-    if(!resp.success){
-      alert("保存失敗");
-      sel.value = row[6];
-    } else {
-      row[6]=status;
-      applyFilters();
-    }
-  }).updateStatus({ barcode: row[3], date: dateStr, task: row[5], status });
-}
-
-initFilters();
-applyFilters();
+function renderStudents(){const q=($('studentSearch')?.value||'').toLowerCase(),rows=state.students.filter(s=>!q||s.name.toLowerCase().includes(q)||s.barcode.includes(q));$('studentBody').innerHTML=rows.map(s=>`<tr><td><b>${s.barcode}</b></td><td>${s.grade}年${s.class}組 ${s.number}番</td><td>${esc(s.name)}</td><td class="statusDot ${s.isActive?'yes':'no'}">${s.isActive?'在籍':'無効'}</td><td><button class="btn ghost" onclick="openStudentModal('${s.studentId}')">編集</button></td></tr>`).join('')}
+function openStudentModal(id=''){const s=state.students.find(x=>x.studentId===id)||{};$('sId').value=s.studentId||'';$('sBarcode').value=s.barcode||'';$('sName').value=s.name||'';$('sGrade').value=s.grade||6;$('sClass').value=s.class||3;$('sNumber').value=s.number||'';$('sStudentEmail').value=s.studentEmail||'';$('sParentEmail').value=s.parentEmail||'';$('sActive').value=s.isActive===false?'false':'true';$('studentModal').classList.remove('hidden');setTimeout(()=>$('sBarcode').focus(),100)}
+async function saveStudent(){loading(true);try{await server('api_saveStudent',{studentId:$('sId').value,barcode:$('sBarcode').value,name:$('sName').value,grade:$('sGrade').value,class:$('sClass').value,number:$('sNumber').value,studentEmail:$('sStudentEmail').value,parentEmail:$('sParentEmail').value,isActive:$('sActive').value==='true'});closeModal('studentModal');await refresh();toast('児童情報を保存しました')}catch(e){fail(e)}finally{loading(false)}}
+async function refresh(){const x=await server('api_getBootstrap');state=x;renderAll()}
+boot();
 </script>
 </body>
 </html>
