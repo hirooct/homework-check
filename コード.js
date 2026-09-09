@@ -201,9 +201,22 @@ function api_getAssignmentStatus(assignmentId) {
 function api_setManualSubmission(data) {
   assertTeacher_();
   ensureReady_();
-  if (data.submitted) return api_scanSubmission({ assignmentId: data.assignmentId, barcode: data.barcode });
   const sheet = getSheet_(SHEETS.SUBMISSIONS);
   const rows = valuesAsObjects_(sheet);
+  if (data.submitted) {
+    const assignment = listAssignments_().find(a => a.assignmentId === String(data.assignmentId));
+    const student = listStudents_().find(s => s.barcode === String(data.barcode) && s.isActive);
+    if (!assignment || !student) return { success: false, message: '課題または児童が見つかりません。' };
+    const exists = rows.some(r => String(r.assignmentId) === assignment.assignmentId && String(r.studentId) === student.studentId && String(r.status) === 'SUBMITTED');
+    if (exists) return { success: true };
+    const record = {
+      submissionId: Utilities.getUuid(), assignmentId: assignment.assignmentId, studentId: student.studentId,
+      barcode: student.barcode, submittedAt: new Date(), method: 'MANUAL', operator: currentEmail_(), status: 'SUBMITTED'
+    };
+    sheet.appendRow(objectToRow_(record, HEADERS.Submissions));
+    logAudit_('MANUAL_SUBMIT', assignment.assignmentId, student.studentId, '', `SUBMITTED: ${data.reason || ''}`);
+    return { success: true };
+  }
   for (let i = rows.length - 1; i >= 0; i--) {
     if (String(rows[i].assignmentId) === String(data.assignmentId) && String(rows[i].barcode) === String(data.barcode) && String(rows[i].status) === 'SUBMITTED') {
       sheet.getRange(i + 2, HEADERS.Submissions.indexOf('status') + 1).setValue('CANCELLED');
