@@ -23,8 +23,10 @@ function doGet(e) {
   const template = HtmlService.createTemplateFromFile(isTeacher ? 'Index_Teacher' : 'Index_Student');
 
   if (!isTeacher) {
-    template.childBarcode = findBarcodeByEmail_(email);
-    template.dataJSON = JSON.stringify(getLegacyStatusData_());
+    const childBarcode = findBarcodeByEmail_(email);
+    const ownData = getLegacyStatusData_().filter((row, index) => index === 0 || String(row[3]) === String(childBarcode));
+    template.childBarcode = childBarcode;
+    template.dataJSON = JSON.stringify(ownData);
   }
 
   template.isTeacher = isTeacher;
