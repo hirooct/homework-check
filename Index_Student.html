@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  body { font-family:"Segoe UI",sans-serif; margin:20px; background:#f9f9f9; color:#333; }
+  h2 { text-align:center; margin-bottom:20px; }
+  .controls { display:flex; gap:15px; flex-wrap:wrap; background:#fff; padding:15px; border-radius:8px; box-shadow:0 2px 6px rgba(0,0,0,0.1); margin-bottom:20px; align-items:center; }
+  label { font-size:14px; font-weight:bold; display:flex; align-items:center; gap:6px; }
+  button { background:#007bff; border:none; border-radius:5px; color:white; padding:8px 14px; cursor:pointer; font-size:14px; }
+  button:hover { background:#0056b3; }
+  select { padding:6px 10px; border:1px solid #ccc; border-radius:4px; font-size:14px; }
+  table { border-collapse:collapse; width:100%; background:white; border-radius:8px; overflow:hidden; box-shadow:0 2px 6px rgba(0,0,0,0.1); }
+  th, td { border:1px solid #e0e0e0; padding:8px; text-align:center; font-size:14px; }
+  th { background:#555; color:white; font-weight:bold; }
+  .unsubmitted-row td { background-color:#ffe5e5; }
+</style>
+</head>
+<body>
+<h2>📘 提出状況確認アプリ（児童・保護者用）</h2>
+
+<div class="controls">
+  <button onclick="toggleFilter()">未提出のみ/すべて表示</button>
+  <label>日付:
+    <select id="dateFilter" onchange="applyFilters()"><option value="">すべて</option></select>
+  </label>
+</div>
+
+<table id="statusTable">
+  <thead>
+    <tr>
+      <th>日付</th>
+      <th>名前</th>
+      <th>課題</th>
+      <th>提出状況</th>
+    </tr>
+  </thead>
+  <tbody></tbody>
+</table>
+
+<script>
+const fullData = JSON.parse('<?= dataJSON ?>');
+const childBarcode = '<?= childBarcode ?>';
+let filtered = false;
+
+function render(data){
+  const tbody = document.querySelector("#statusTable tbody");
+  tbody.innerHTML = "";
+  data.forEach(row=>{
+    const tr = document.createElement("tr");
+    if(row[6]==="未") tr.classList.add("unsubmitted-row");
+
+    // 日付
+    const d = new Date(row[0]);
+    const dateText = !isNaN(d)?`${d.getMonth()+1}月${d.getDate()}日`:row[0];
+    const tdDate = document.createElement("td"); tdDate.textContent=dateText; tr.appendChild(tdDate);
+
+    // 名前
+    const tdName = document.createElement("td"); tdName.textContent=row[4]; tr.appendChild(tdName);
+
+    // 課題
+    const tdTask = document.createElement("td"); tdTask.textContent=row[5]; tr.appendChild(tdTask);
+
+    // 提出状況
+    const tdStatus = document.createElement("td"); tdStatus.textContent=row[6]; tr.appendChild(tdStatus);
+
+    tbody.appendChild(tr);
+  });
+}
+
+function toggleFilter(){ filtered=!filtered; applyFilters(); }
+
+function applyFilters(){
+  let data = fullData.filter(r=>String(r[3])===childBarcode);
+  if(filtered) data = data.filter(r=>r[6]!=="〇");
+
+  const dateVal = document.getElementById("dateFilter").value;
+  if(dateVal) data = data.filter(r=>{
+    const d = new Date(r[0]);
+    const formatted = !isNaN(d)?`${d.getMonth()+1}月${d.getDate()}日`:r[0];
+    return formatted===dateVal;
+  });
+
+  render(data);
+}
+
+function initDateFilter(){
+  const dateSet = new Set();
+  fullData.filter(r=>String(r[3])===childBarcode).forEach(r=>{
+    const d = new Date(r[0]);
+    dateSet.add(!isNaN(d)?`${d.getMonth()+1}月${d.getDate()}日`:r[0]);
+  });
+
+  const dateFilter = document.getElementById("dateFilter");
+  Array.from(dateSet).sort().forEach(date=>{
+    const opt = document.createElement("option");
+    opt.value = date;
+    opt.textContent = date;
+    dateFilter.appendChild(opt);
+  });
+}
+
+initDateFilter();
+applyFilters();
+</script>
+</body>
+</html>

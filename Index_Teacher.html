@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+body { font-family:"Segoe UI",sans-serif; margin:20px; background:#f9f9f9; color:#333; }
+h2 { text-align:center; margin-bottom:20px; }
+.controls { display:flex; gap:15px; flex-wrap:wrap; background:#fff; padding:15px; border-radius:8px; box-shadow:0 2px 6px rgba(0,0,0,0.1); margin-bottom:20px; align-items:center; }
+label { font-size:14px; font-weight:bold; display:flex; align-items:center; gap:6px; }
+button { background:#007bff; border:none; border-radius:5px; color:white; padding:8px 14px; cursor:pointer; font-size:14px; }
+button:hover { background:#0056b3; }
+select { padding:6px 10px; border:1px solid #ccc; border-radius:4px; font-size:14px; }
+table { border-collapse:collapse; width:100%; background:white; border-radius:8px; overflow:hidden; box-shadow:0 2px 6px rgba(0,0,0,0.1); }
+th, td { border:1px solid #e0e0e0; padding:8px; text-align:center; font-size:14px; }
+th { background:#555; color:white; font-weight:bold; }
+.unsubmitted-row td { background-color:#ffe5e5; }
+.submitted-row td { background-color:white; }
+</style>
+</head>
+<body>
+<h2>📘 提出状況確認アプリ（教師用）</h2>
+
+<div class="controls">
+  <button onclick="toggleFilter()">未提出のみ/すべて表示</button>
+  <label>日付:
+    <select id="dateFilter" onchange="applyFilters()"><option value="">すべて</option></select>
+  </label>
+  <label>バーコード:
+    <select id="barcodeFilter" onchange="applyFilters()"><option value="">すべて</option></select>
+  </label>
+</div>
+
+<table id="statusTable">
+  <thead>
+    <tr>
+      <th>日付</th>
+      <th>学年</th>
+      <th>組</th>
+      <th>バーコード</th>
+      <th>名前</th>
+      <th>課題</th>
+      <th>提出状況</th>
+    </tr>
+  </thead>
+  <tbody></tbody>
+</table>
+
+<script>
+const fullData = JSON.parse('<?= dataJSON ?>'); // 1行目はヘッダ
+let filtered = false;
+
+function formatDate(raw){
+  const d = new Date(raw);
+  if(!isNaN(d)) return `${d.getMonth()+1}月${d.getDate()}日`;
+  return raw;
+}
+
+function render(data){
+  const tbody = document.querySelector("#statusTable tbody");
+  tbody.innerHTML = "";
+
+  data.forEach(row=>{
+    const tr = document.createElement("tr");
+    if(row[6]==="未") tr.classList.add("unsubmitted-row");
+    else tr.classList.add("submitted-row");
+
+    for(let i=0;i<6;i++){
+      const td = document.createElement("td");
+      td.textContent = (i===0)?formatDate(row[i]):row[i];
+      tr.appendChild(td);
+    }
+
+    const tdStatus = document.createElement("td");
+    const sel = document.createElement("select");
+    sel.innerHTML = `<option value="未" ${row[6]==="未"?"selected":""}>未</option>
+                     <option value="〇" ${row[6]==="〇"?"selected":""}>〇</option>`;
+    sel.onchange = ()=>updateStatusKey(row, sel);
+    tdStatus.appendChild(sel);
+    tr.appendChild(tdStatus);
+
+    tbody.appendChild(tr);
+  });
+}
+
+function toggleFilter(){ filtered=!filtered; applyFilters(); }
+
+function applyFilters(){
+  let data = fullData.slice(1); // ヘッダ行無視
+  if(filtered) data = data.filter(r=>r[6]!=="〇");
+
+  const dateVal = document.getElementById("dateFilter").value;
+  if(dateVal) data = data.filter(r=>formatDate(r[0])===dateVal);
+
+  const barcodeVal = document.getElementById("barcodeFilter").value;
+  if(barcodeVal) data = data.filter(r=>String(r[3])===barcodeVal);
+
+  render(data);
+}
+
+function initFilters(){
+  const dateSet = new Set();
+  const barcodeSet = new Map();
+
+  fullData.slice(1).forEach(r=>{
+    dateSet.add(formatDate(r[0]));
+    barcodeSet.set(String(r[3]), r[4]);
+  });
+
+  const dateFilter = document.getElementById("dateFilter");
+  Array.from(dateSet).sort().forEach(d=>{
+    const opt = document.createElement("option"); opt.value=opt.textContent=d; dateFilter.appendChild(opt);
+  });
+
+  const barcodeFilter = document.getElementById("barcodeFilter");
+  barcodeSet.forEach((name,code)=>{
+    const opt = document.createElement("option"); opt.value=code; opt.textContent=`${code} (${name})`;
+    barcodeFilter.appendChild(opt);
+  });
+}
+
+function updateStatusKey(row, sel){
+  const status = sel.value;
+  const dateStr = formatDate(row[0]);
+
+  google.script.run.withSuccessHandler(resp=>{
+    if(!resp.success){
+      alert("保存失敗");
+      sel.value = row[6];
+    } else {
+      row[6]=status;
+      applyFilters();
+    }
+  }).updateStatus({ barcode: row[3], date: dateStr, task: row[5], status });
+}
+
+initFilters();
+applyFilters();
+</script>
+</body>
+</html>
