@@ -42,6 +42,100 @@ function setupPhase1() {
   return { success: true, imported, message: imported ? `${imported}人の児童を取り込みました` : '初期設定が完了しました' };
 }
 
+/** 旧「提出状況」シートの移行件数を、書き込みなしで確認する。 */
+function api_previewLegacyMigration(schoolYear) {
+  assertTeacher_();
+  ensureReady_();
+  const plan = buildLegacyMigrationPlan_(Number(schoolYear));
+  return {
+    legacyRows: plan.validRows.length,
+    assignmentCount: Object.keys(plan.groups).length,
+    studentCount: Object.keys(plan.students).length,
+    submittedCount: plan.validRows.filter(r => r.submitted).length,
+    invalidCount: plan.invalidRows.length,
+    invalidExamples: plan.invalidRows.slice(0, 5)
+  };
+}
+
+/** 旧データを追加移行する。既存データと一致するものは重複登録しない。 */
+function api_runLegacyMigration(schoolYear) {
+  assertTeacher_();
+  ensureReady_();
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const plan = buildLegacyMigrationPlan_(Number(schoolYear));
+    if (!plan.validRows.length) throw new Error('移行できるデータがありません。');
+
+    const studentSheet = getSheet_(SHEETS.STUDENTS);
+    const existingStudents = listStudents_();
+    const studentByBarcode = {};
+    existingStudents.forEach(s => studentByBarcode[s.barcode] = s);
+    const newStudentRows = [];
+    Object.keys(plan.students).forEach(barcode => {
+      if (studentByBarcode[barcode]) return;
+      const src = plan.students[barcode], parsed = parseBarcode_(barcode);
+      const student = {
+        studentId: Utilities.getUuid(), barcode, grade: src.grade || parsed.grade,
+        class: src.classNo || parsed.classNo, number: parsed.number, name: src.name,
+        studentEmail: '', parentEmail: '', isActive: true
+      };
+      studentByBarcode[barcode] = student;
+      newStudentRows.push(objectToRow_(student, HEADERS.Students));
+    });
+    if (newStudentRows.length) studentSheet.getRange(studentSheet.getLastRow() + 1, 1, newStudentRows.length, HEADERS.Students.length).setValues(newStudentRows);
+
+    const assignmentSheet = getSheet_(SHEETS.ASSIGNMENTS);
+    const existingAssignments = listAssignments_();
+    const assignmentByKey = {};
+    existingAssignments.forEach(a => assignmentByKey[legacyGroupKey_(a.date, a.targetGrade, a.targetClass, a.title)] = a);
+    const newAssignmentRows = [];
+    Object.keys(plan.groups).forEach(key => {
+      if (assignmentByKey[key]) return;
+      const src = plan.groups[key];
+      const assignment = {
+        assignmentId: Utilities.getUuid(), date: src.date, subject: '移行データ', title: src.title,
+        targetGrade: src.grade, targetClass: src.classNo, status: 'CLOSED',
+        createdAt: new Date(), createdBy: currentEmail_()
+      };
+      assignment.dateLabel = formatDateLabel_(assignment.date);
+      assignmentByKey[key] = assignment;
+      newAssignmentRows.push(objectToRow_(assignment, HEADERS.Assignments));
+    });
+    if (newAssignmentRows.length) assignmentSheet.getRange(assignmentSheet.getLastRow() + 1, 1, newAssignmentRows.length, HEADERS.Assignments.length).setValues(newAssignmentRows);
+
+    const submissionSheet = getSheet_(SHEETS.SUBMISSIONS);
+    const existingSubmissionKeys = new Set(valuesAsObjects_(submissionSheet)
+      .filter(r => String(r.status) === 'SUBMITTED')
+      .map(r => `${r.assignmentId}|${r.studentId}`));
+    const newSubmissionRows = [];
+    let skipped = 0;
+    plan.validRows.filter(r => r.submitted).forEach(r => {
+      const assignment = assignmentByKey[r.groupKey], student = studentByBarcode[r.barcode];
+      if (!assignment || !student) { skipped++; return; }
+      const key = `${assignment.assignmentId}|${student.studentId}`;
+      if (existingSubmissionKeys.has(key)) { skipped++; return; }
+      existingSubmissionKeys.add(key);
+      const record = {
+        submissionId: Utilities.getUuid(), assignmentId: assignment.assignmentId, studentId: student.studentId,
+        barcode: student.barcode, submittedAt: new Date(`${r.date}T12:00:00`),
+        method: 'IMPORT', operator: currentEmail_(), status: 'SUBMITTED'
+      };
+      newSubmissionRows.push(objectToRow_(record, HEADERS.Submissions));
+    });
+    if (newSubmissionRows.length) submissionSheet.getRange(submissionSheet.getLastRow() + 1, 1, newSubmissionRows.length, HEADERS.Submissions.length).setValues(newSubmissionRows);
+
+    const result = {
+      success: true, addedStudents: newStudentRows.length, addedAssignments: newAssignmentRows.length,
+      addedSubmissions: newSubmissionRows.length, skipped, invalid: plan.invalidRows.length
+    };
+    logAudit_('LEGACY_MIGRATION', '', '', '', JSON.stringify(result));
+    return result;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 function api_getBootstrap() {
   assertTeacher_();
   const ready = isPhase1Ready_();
@@ -312,6 +406,56 @@ function importLegacyStudentsIfEmpty_(ss) {
   });
   if (rows.length) target.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
   return rows.length;
+}
+
+function buildLegacyMigrationPlan_(schoolYear) {
+  if (!Number.isInteger(schoolYear) || schoolYear < 2000 || schoolYear > 2100) throw new Error('年度を西暦4桁で入力してください。');
+  const sheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SHEETS.LEGACY_STATUS);
+  if (!sheet || sheet.getLastRow() < 2) throw new Error('「提出状況」シートに移行元データがありません。');
+  const rows = sheet.getDataRange().getValues().slice(1);
+  const validRows = [], invalidRows = [], groups = {}, students = {};
+  rows.forEach((r, index) => {
+    if (!r.some(v => v !== '')) return;
+    const barcode = String(r[3] || '').trim();
+    const parsed = /^\d{4}$/.test(barcode) ? parseBarcode_(barcode) : null;
+    const date = normalizeLegacyDate_(r[0], schoolYear);
+    const grade = Number(r[1] || (parsed && parsed.grade));
+    const classNo = Number(r[2] || (parsed && parsed.classNo));
+    const name = String(r[4] || '').trim();
+    const title = String(r[5] || '').trim();
+    if (!date || !parsed || !grade || !classNo || !name || !title) {
+      invalidRows.push({ row: index + 2, date: String(r[0] || ''), barcode, name, title });
+      return;
+    }
+    const groupKey = legacyGroupKey_(date, grade, classNo, title);
+    const item = { date, grade, classNo, barcode, name, title, groupKey, submitted: isLegacySubmitted_(r[6]) };
+    validRows.push(item);
+    groups[groupKey] = { date, grade, classNo, title };
+    students[barcode] = { barcode, grade, classNo, name };
+  });
+  return { validRows, invalidRows, groups, students };
+}
+
+function legacyGroupKey_(date, grade, classNo, title) {
+  return [normalizeDate_(date), Number(grade), Number(classNo), String(title).trim()].join('|');
+}
+
+function isLegacySubmitted_(value) {
+  const s = String(value == null ? '' : value).trim().toUpperCase();
+  return ['〇', '○', '済', '提出済み', 'TRUE', '1'].includes(s);
+}
+
+function normalizeLegacyDate_(value, schoolYear) {
+  if (Object.prototype.toString.call(value) === '[object Date]' && !isNaN(value)) return normalizeDate_(value);
+  const s = String(value || '').trim();
+  if (/^\d{4}[-\/]\d{1,2}[-\/]\d{1,2}$/.test(s)) return normalizeDate_(s.replace(/\//g, '-'));
+  let m = s.match(/^(\d{1,2})[月\/\-](\d{1,2})日?$/);
+  if (!m) return '';
+  const month = Number(m[1]), day = Number(m[2]);
+  const year = month >= 4 ? schoolYear : schoolYear + 1;
+  const d = new Date(year, month - 1, day);
+  if (d.getFullYear() !== year || d.getMonth() !== month - 1 || d.getDate() !== day) return '';
+  return Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy-MM-dd');
 }
 
 function ensureReady_() { if (!isPhase1Ready_()) throw new Error('先に「初期設定を実行」を押してください。'); }
