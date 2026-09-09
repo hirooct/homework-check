@@ -292,6 +292,38 @@ function api_getAssignmentStatus(assignmentId) {
   return { assignment, rows, submitted: rows.filter(r => r.submitted).length, total: rows.length };
 }
 
+/** 日付・課題・児童を横断して提出状況を確認する教師用一覧。 */
+function api_getStatusOverview(filters) {
+  assertTeacher_();
+  ensureReady_();
+  filters = filters || {};
+  let assignments = listAssignments_();
+  if (filters.date) assignments = assignments.filter(a => a.date === String(filters.date));
+  if (filters.assignmentId) assignments = assignments.filter(a => a.assignmentId === String(filters.assignmentId));
+
+  const students = listStudents_().filter(s => s.isActive);
+  const submittedKeys = new Set(valuesAsObjects_(getSheet_(SHEETS.SUBMISSIONS))
+    .filter(r => String(r.status) === 'SUBMITTED')
+    .map(r => `${r.assignmentId}|${r.studentId}`));
+  let rows = [];
+  assignments.forEach(a => {
+    students.filter(s => Number(s.grade) === Number(a.targetGrade) && Number(s.class) === Number(a.targetClass)).forEach(s => {
+      if (filters.barcode && s.barcode !== String(filters.barcode)) return;
+      rows.push({
+        assignmentId: a.assignmentId, date: a.date, dateLabel: a.dateLabel, subject: a.subject,
+        title: a.title, assignmentStatus: a.status, studentId: s.studentId, barcode: s.barcode,
+        grade: s.grade, class: s.class, number: s.number, name: s.name,
+        submitted: submittedKeys.has(`${a.assignmentId}|${s.studentId}`)
+      });
+    });
+  });
+  rows.sort((a, b) => b.date.localeCompare(a.date) || a.title.localeCompare(b.title, 'ja') || a.barcode.localeCompare(b.barcode));
+  const total = rows.length;
+  const submitted = rows.filter(r => r.submitted).length;
+  if (filters.missingOnly) rows = rows.filter(r => !r.submitted);
+  return { rows, total, submitted, missing: total - submitted, displayed: rows.length };
+}
+
 function api_setManualSubmission(data) {
   assertTeacher_();
   ensureReady_();
