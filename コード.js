@@ -18,21 +18,59 @@ const HEADERS = {
 };
 
 function doGet(e) {
-  const email = Session.getActiveUser().getEmail();
+  const email = currentEmail_();
   const isTeacher = TEACHER_EMAILS.includes(email);
   const template = HtmlService.createTemplateFromFile(isTeacher ? 'Index_Teacher' : 'Index_Student');
-
-  if (!isTeacher) {
-    const childBarcode = findBarcodeByEmail_(email);
-    const ownData = getLegacyStatusData_().filter((row, index) => index === 0 || String(row[3]) === String(childBarcode));
-    template.childBarcode = childBarcode;
-    template.dataJSON = JSON.stringify(ownData);
-  }
-
   template.isTeacher = isTeacher;
   return template.evaluate()
     .setTitle('提出状況確認アプリ')
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+}
+
+/** ログイン中の児童・保護者本人にひもづく最新データだけを返す。 */
+function api_getMyStatus() {
+  const email = currentEmail_();
+  if (!email) {
+    return {
+      success: false,
+      code: 'EMAIL_UNAVAILABLE',
+      message: 'Googleアカウントを確認できません。学校のGoogleアカウントでログインし、Webアプリの公開範囲を「ドメイン内のユーザー」に設定してください。'
+    };
+  }
+  const barcode = findBarcodeByEmail_(email);
+  if (!barcode) {
+    return {
+      success: false,
+      code: 'ACCOUNT_NOT_LINKED',
+      message: `このGoogleアカウント（${email}）に対応する児童が登録されていません。教師に児童メールまたは保護者メールの登録を依頼してください。`
+    };
+  }
+
+  if (isPhase1Ready_() && listAssignments_().length) {
+    const student = listStudents_().find(s => s.barcode === barcode && s.isActive);
+    if (!student) {
+      return { success: false, code: 'STUDENT_NOT_FOUND', message: `バーコード ${barcode} の児童情報が見つかりません。` };
+    }
+    const submittedIds = new Set(valuesAsObjects_(getSheet_(SHEETS.SUBMISSIONS))
+      .filter(r => String(r.studentId) === student.studentId && String(r.status) === 'SUBMITTED')
+      .map(r => String(r.assignmentId)));
+    const rows = listAssignments_()
+      .filter(a => Number(a.targetGrade) === student.grade && Number(a.targetClass) === student.class)
+      .map(a => ({
+        assignmentId: a.assignmentId, date: a.date, dateLabel: a.dateLabel, subject: a.subject,
+        title: a.title, assignmentStatus: a.status, submitted: submittedIds.has(a.assignmentId)
+      }));
+    return { success: true, email, barcode, name: student.name, rows, fetchedAt: new Date().toISOString() };
+  }
+
+  const legacyRows = getLegacyStatusData_().slice(1)
+    .filter(r => String(r[3]).trim() === barcode)
+    .map((r, index) => ({
+      assignmentId: `legacy-${index}`, date: normalizeDate_(r[0]), dateLabel: formatDateLabel_(r[0]),
+      subject: '', title: String(r[5] || ''), assignmentStatus: 'CLOSED', submitted: isLegacySubmitted_(r[6])
+    }))
+    .sort((a, b) => b.date.localeCompare(a.date));
+  return { success: true, email, barcode, name: '', rows: legacyRows, fetchedAt: new Date().toISOString() };
 }
 
 /** 初回のみ実行。既存データは消さず、新しいシートを追加する。 */
@@ -443,13 +481,14 @@ function getLegacyStatusData_() {
 }
 
 function findBarcodeByEmail_(email) {
+  email = normalizeEmail_(email);
   if (!email) return '';
-  const student = listStudents_().find(s => s.studentEmail === email || s.parentEmail === email);
+  const student = listStudents_().find(s => normalizeEmail_(s.studentEmail) === email || normalizeEmail_(s.parentEmail) === email);
   if (student) return student.barcode;
   const sheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SHEETS.LEGACY_ACCOUNT);
   if (!sheet) return '';
-  const row = sheet.getDataRange().getValues().find(r => r[2] === email || r[3] === email);
-  return row ? String(row[0]) : '';
+  const row = sheet.getDataRange().getValues().find(r => normalizeEmail_(r[2]) === email || normalizeEmail_(r[3]) === email);
+  return row ? String(row[0]).trim() : '';
 }
 
 function importLegacyStudentsIfEmpty_(ss) {
@@ -459,7 +498,7 @@ function importLegacyStudentsIfEmpty_(ss) {
   const account = ss.getSheetByName(SHEETS.LEGACY_ACCOUNT);
   if (account) account.getDataRange().getValues().slice(1).forEach(r => {
     const code = String(r[0] || '').trim();
-    if (/^\d{4}$/.test(code)) byBarcode[code] = { barcode: code, name: String(r[1] || ''), studentEmail: String(r[2] || ''), parentEmail: String(r[3] || '') };
+    if (/^\d{4}$/.test(code)) byBarcode[code] = { barcode: code, name: String(r[1] || '').trim(), studentEmail: normalizeEmail_(r[2]), parentEmail: normalizeEmail_(r[3]) };
   });
   const legacy = ss.getSheetByName(SHEETS.LEGACY_STATUS);
   if (legacy) legacy.getDataRange().getValues().slice(1).forEach(r => {
@@ -541,7 +580,8 @@ function valuesAsObjects_(sheet) {
   return values.slice(1).filter(r => r.some(v => v !== '')).map(r => headers.reduce((o, h, i) => (o[h] = r[i], o), {}));
 }
 function objectToRow_(obj, headers) { return headers.map(h => obj[h] === undefined ? '' : obj[h]); }
-function currentEmail_() { return Session.getActiveUser().getEmail(); }
+function normalizeEmail_(value) { return String(value || '').trim().toLowerCase(); }
+function currentEmail_() { return normalizeEmail_(Session.getActiveUser().getEmail()); }
 function assertTeacher_() { if (!TEACHER_EMAILS.includes(currentEmail_())) throw new Error('教師用機能を利用する権限がありません。'); }
 function parseBarcode_(code) { return { grade: Number(code[0]), classNo: Number(code[1]), number: Number(code.slice(2)) }; }
 function toBool_(v) { return v === true || String(v).toUpperCase() === 'TRUE' || String(v) === '1'; }
