@@ -7,6 +7,8 @@ const SHEETS = {
   STUDENTS: 'Students',
   ASSIGNMENTS: 'Assignments',
   TARGETS: 'AssignmentTargets',
+  DUTY_SESSIONS: 'DutySessions',
+  DUTY_MEMBERS: 'DutyMembers',
   SUBMISSIONS: 'Submissions',
   AUDIT: 'AuditLog'
 };
@@ -15,6 +17,8 @@ const HEADERS = {
   Students: ['studentId', 'barcode', 'grade', 'class', 'number', 'name', 'studentEmail', 'parentEmail', 'isActive'],
   Assignments: ['assignmentId', 'date', 'subject', 'title', 'targetGrade', 'targetClass', 'status', 'createdAt', 'createdBy'],
   AssignmentTargets: ['assignmentId', 'studentId', 'barcode', 'targetedAt'],
+  DutySessions: ['dutySessionId', 'assignmentId', 'startsAt', 'endsAt', 'status', 'createdAt', 'createdBy'],
+  DutyMembers: ['dutySessionId', 'studentId', 'studentEmail', 'assignedAt'],
   Submissions: ['submissionId', 'assignmentId', 'studentId', 'barcode', 'submittedAt', 'method', 'operator', 'status'],
   AuditLog: ['at', 'action', 'assignmentId', 'studentId', 'before', 'after', 'operator']
 };
@@ -39,7 +43,8 @@ function api_getMyStatus() {
       message: 'Googleアカウントを確認できません。学校のGoogleアカウントでログインし、Webアプリの公開範囲を「ドメイン内のユーザー」に設定してください。'
     };
   }
-  const barcode = findBarcodeByEmail_(email);
+  const access = findStudentAccessByEmail_(email);
+  const barcode = access.barcode;
   if (!barcode) {
     return {
       success: false,
@@ -49,6 +54,7 @@ function api_getMyStatus() {
   }
 
   if (isPhase1Ready_() && listAssignments_().length) {
+    ensureReady_();
     ensureAllAssignmentTargets_();
     const student = listStudents_().find(s => s.barcode === barcode);
     if (!student) {
@@ -66,7 +72,8 @@ function api_getMyStatus() {
         assignmentId: a.assignmentId, date: a.date, dateLabel: a.dateLabel, subject: a.subject,
         title: a.title, assignmentStatus: a.status, submitted: submittedIds.has(a.assignmentId)
       }));
-    return { success: true, email, barcode, name: student.name, rows, fetchedAt: new Date().toISOString() };
+    const dutySessions = access.role === 'STUDENT' ? getActiveDutySessionsFor_(student.studentId, email) : [];
+    return { success: true, email, barcode, name: student.name, role: access.role, rows, dutySessions, fetchedAt: new Date().toISOString() };
   }
 
   const legacyRows = getLegacyStatusData_().slice(1)
@@ -76,7 +83,7 @@ function api_getMyStatus() {
       subject: '', title: String(r[5] || ''), assignmentStatus: 'CLOSED', submitted: isLegacySubmitted_(r[6])
     }))
     .sort((a, b) => b.date.localeCompare(a.date));
-  return { success: true, email, barcode, name: '', rows: legacyRows, fetchedAt: new Date().toISOString() };
+  return { success: true, email, barcode, name: '', role: access.role, rows: legacyRows, dutySessions: [], fetchedAt: new Date().toISOString() };
 }
 
 /** 初回のみ実行。既存データは消さず、新しいシートを追加する。 */
@@ -186,14 +193,62 @@ function api_getBootstrap() {
   assertTeacher_();
   const ready = isPhase1Ready_();
   if (!ready) return { ready: false, email: currentEmail_() };
+  ensureReady_();
   ensureAllAssignmentTargets_();
   return {
     ready: true,
     email: currentEmail_(),
     students: listStudents_(),
     assignments: listAssignments_(),
-    dashboard: buildDashboard_()
+    dashboard: buildDashboard_(),
+    duty: getDutyAdminData_()
   };
+}
+
+function api_createDutySession(data) {
+  assertTeacher_();
+  ensureReady_();
+  const assignmentId = String(data.assignmentId || '');
+  const assignment = listAssignments_().find(a => a.assignmentId === assignmentId);
+  if (!assignment) throw new Error('課題が見つかりません。');
+  if (assignment.status !== 'OPEN') throw new Error('受付中の課題を選択してください。');
+  const studentIds = Array.from(new Set(Array.isArray(data.studentIds) ? data.studentIds.map(String) : []));
+  if (!studentIds.length) throw new Error('当番児童を1人以上選択してください。');
+  const students = listStudents_().filter(s => studentIds.includes(s.studentId));
+  const unavailable = students.filter(s => !normalizeEmail_(s.studentEmail));
+  if (unavailable.length) throw new Error(`児童メールが未登録です：${unavailable.map(s => s.name).join('、')}`);
+  const endsAt = new Date(data.endsAt);
+  if (isNaN(endsAt) || endsAt <= new Date()) throw new Error('終了時刻を現在より後に設定してください。');
+  const now = new Date(), dutySessionId = Utilities.getUuid();
+  getSheet_(SHEETS.DUTY_SESSIONS).appendRow([dutySessionId, assignmentId, now, endsAt, 'OPEN', now, currentEmail_()]);
+  const memberRows = students.map(s => [dutySessionId, s.studentId, normalizeEmail_(s.studentEmail), now]);
+  getSheet_(SHEETS.DUTY_MEMBERS).getRange(getSheet_(SHEETS.DUTY_MEMBERS).getLastRow() + 1, 1, memberRows.length, HEADERS.DutyMembers.length).setValues(memberRows);
+  logAudit_('CREATE_DUTY_SESSION', assignmentId, '', '', JSON.stringify({ dutySessionId, studentIds }));
+  return { success: true, duty: getDutyAdminData_() };
+}
+
+function api_closeDutySession(dutySessionId) {
+  assertTeacher_();
+  ensureReady_();
+  const sheet = getSheet_(SHEETS.DUTY_SESSIONS), rows = valuesAsObjects_(sheet);
+  const index = rows.findIndex(r => String(r.dutySessionId) === String(dutySessionId));
+  if (index < 0) throw new Error('当番セッションが見つかりません。');
+  sheet.getRange(index + 2, HEADERS.DutySessions.indexOf('status') + 1).setValue('CLOSED');
+  logAudit_('CLOSE_DUTY_SESSION', rows[index].assignmentId, '', 'OPEN', 'CLOSED');
+  return { success: true, duty: getDutyAdminData_() };
+}
+
+function api_scanDutyBatch(data) {
+  ensureReady_();
+  const email = currentEmail_();
+  if (!email) throw new Error('学校のGoogleアカウントを確認できません。');
+  const session = getDutySession_(data.dutySessionId);
+  if (!session || !isDutySessionOpen_(session)) throw new Error('この当番チェックは終了しています。');
+  const member = valuesAsObjects_(getSheet_(SHEETS.DUTY_MEMBERS)).find(r =>
+    String(r.dutySessionId) === String(session.dutySessionId) && normalizeEmail_(r.studentEmail) === email
+  );
+  if (!member) throw new Error('この課題の当番には指定されていません。');
+  return scanSubmissionsBatch_(session.assignmentId, data.barcodes, email, 'DUTY_CAMERA');
 }
 
 function api_saveStudent(data) {
@@ -282,9 +337,13 @@ function api_scanSubmission(data) {
 /** 連続読取用。一度の通信で複数件を検証し、一括保存する。 */
 function api_scanSubmissionsBatch(data) {
   assertTeacher_();
+  return scanSubmissionsBatch_(data.assignmentId, data.barcodes, currentEmail_(), 'TEACHER');
+}
+
+function scanSubmissionsBatch_(assignmentIdValue, barcodeValues, operator, method) {
   ensureReady_();
-  const assignmentId = String(data.assignmentId || '');
-  const barcodes = Array.isArray(data.barcodes) ? data.barcodes.slice(0, 100).map(v => String(v || '').trim()) : [];
+  const assignmentId = String(assignmentIdValue || '');
+  const barcodes = Array.isArray(barcodeValues) ? barcodeValues.slice(0, 100).map(v => String(v || '').trim()) : [];
   if (!barcodes.length) return { results: [], count: submissionCount_(assignmentId) };
 
   const lock = LockService.getScriptLock();
@@ -304,7 +363,7 @@ function api_scanSubmissionsBatch(data) {
     const existingStudentIds = new Set(valuesAsObjects_(submissionSheet)
       .filter(r => String(r.assignmentId) === assignmentId && String(r.status) === 'SUBMITTED')
       .map(r => String(r.studentId)));
-    const newRows = [], auditRows = [], results = [], now = new Date(), operator = currentEmail_();
+    const newRows = [], auditRows = [], results = [], now = new Date();
 
     barcodes.forEach(barcode => {
       if (!/^\d{4}$/.test(barcode)) {
@@ -327,10 +386,10 @@ function api_scanSubmissionsBatch(data) {
       existingStudentIds.add(student.studentId);
       const record = {
         submissionId: Utilities.getUuid(), assignmentId, studentId: student.studentId, barcode,
-        submittedAt: now, method: 'TEACHER', operator, status: 'SUBMITTED'
+        submittedAt: now, method, operator, status: 'SUBMITTED'
       };
       newRows.push(objectToRow_(record, HEADERS.Submissions));
-      auditRows.push([now, 'SCAN_SUBMISSION', assignmentId, student.studentId, '', 'SUBMITTED', operator]);
+      auditRows.push([now, method === 'DUTY_CAMERA' ? 'DUTY_SCAN_SUBMISSION' : 'SCAN_SUBMISSION', assignmentId, student.studentId, '', 'SUBMITTED', operator]);
       results.push({ barcode, success: true, type: 'SUCCESS', message: `${student.name}さんを登録しました。`, student });
     });
 
@@ -506,14 +565,72 @@ function getLegacyStatusData_() {
 }
 
 function findBarcodeByEmail_(email) {
+  return findStudentAccessByEmail_(email).barcode;
+}
+
+function findStudentAccessByEmail_(email) {
   email = normalizeEmail_(email);
-  if (!email) return '';
-  const student = listStudents_().find(s => normalizeEmail_(s.studentEmail) === email || normalizeEmail_(s.parentEmail) === email);
-  if (student) return student.barcode;
+  if (!email) return { barcode: '', role: '' };
+  let student = listStudents_().find(s => normalizeEmail_(s.studentEmail) === email);
+  if (student) return { barcode: student.barcode, role: 'STUDENT', studentId: student.studentId };
+  student = listStudents_().find(s => normalizeEmail_(s.parentEmail) === email);
+  if (student) return { barcode: student.barcode, role: 'PARENT', studentId: student.studentId };
   const sheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SHEETS.LEGACY_ACCOUNT);
-  if (!sheet) return '';
-  const row = sheet.getDataRange().getValues().find(r => normalizeEmail_(r[2]) === email || normalizeEmail_(r[3]) === email);
-  return row ? String(row[0]).trim() : '';
+  if (!sheet) return { barcode: '', role: '' };
+  const rows = sheet.getDataRange().getValues();
+  let row = rows.find(r => normalizeEmail_(r[2]) === email);
+  if (row) return { barcode: String(row[0]).trim(), role: 'STUDENT' };
+  row = rows.find(r => normalizeEmail_(r[3]) === email);
+  return row ? { barcode: String(row[0]).trim(), role: 'PARENT' } : { barcode: '', role: '' };
+}
+
+function getDutySession_(dutySessionId) {
+  return valuesAsObjects_(getSheet_(SHEETS.DUTY_SESSIONS)).find(r => String(r.dutySessionId) === String(dutySessionId)) || null;
+}
+
+function isDutySessionOpen_(session) {
+  const now = new Date(), start = new Date(session.startsAt), end = new Date(session.endsAt);
+  return String(session.status) === 'OPEN' && !isNaN(start) && !isNaN(end) && start <= now && now <= end;
+}
+
+function getActiveDutySessionsFor_(studentId, email) {
+  const assignments = {};
+  listAssignments_().forEach(a => assignments[a.assignmentId] = a);
+  const memberSessionIds = new Set(valuesAsObjects_(getSheet_(SHEETS.DUTY_MEMBERS))
+    .filter(r => String(r.studentId) === String(studentId) && normalizeEmail_(r.studentEmail) === normalizeEmail_(email))
+    .map(r => String(r.dutySessionId)));
+  return valuesAsObjects_(getSheet_(SHEETS.DUTY_SESSIONS))
+    .filter(s => memberSessionIds.has(String(s.dutySessionId)) && isDutySessionOpen_(s))
+    .map(s => {
+      const a = assignments[String(s.assignmentId)] || {};
+      return {
+        dutySessionId: String(s.dutySessionId), assignmentId: String(s.assignmentId),
+        title: String(a.title || ''), subject: String(a.subject || ''), dateLabel: String(a.dateLabel || ''),
+        endsAt: new Date(s.endsAt).toISOString()
+      };
+    });
+}
+
+function getDutyAdminData_() {
+  const assignments = {}, students = {};
+  listAssignments_().forEach(a => assignments[a.assignmentId] = a);
+  listStudents_().forEach(s => students[s.studentId] = s);
+  const membersBySession = {};
+  valuesAsObjects_(getSheet_(SHEETS.DUTY_MEMBERS)).forEach(r => {
+    const id = String(r.dutySessionId);
+    if (!membersBySession[id]) membersBySession[id] = [];
+    const student = students[String(r.studentId)];
+    membersBySession[id].push({ studentId: String(r.studentId), name: student ? student.name : '', email: normalizeEmail_(r.studentEmail) });
+  });
+  return valuesAsObjects_(getSheet_(SHEETS.DUTY_SESSIONS)).map(s => {
+    const a = assignments[String(s.assignmentId)] || {};
+    return {
+      dutySessionId: String(s.dutySessionId), assignmentId: String(s.assignmentId), title: String(a.title || ''),
+      dateLabel: String(a.dateLabel || ''), startsAt: new Date(s.startsAt).toISOString(), endsAt: new Date(s.endsAt).toISOString(),
+      status: isDutySessionOpen_(s) ? 'OPEN' : String(s.status) === 'OPEN' ? 'EXPIRED' : String(s.status),
+      members: membersBySession[String(s.dutySessionId)] || []
+    };
+  }).sort((a, b) => b.startsAt.localeCompare(a.startsAt));
 }
 
 function importLegacyStudentsIfEmpty_(ss) {
@@ -618,15 +735,23 @@ function createAssignmentTargets_(assignment) {
   return rows.length;
 }
 
-function ensureReady_() { if (!isPhase1Ready_()) throw new Error('先に「初期設定を実行」を押してください。'); ensureTargetsSheet_(); }
+function ensureReady_() {
+  if (!isPhase1Ready_()) throw new Error('先に「初期設定を実行」を押してください。');
+  ensureTargetsSheet_();
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  ensureSheet_(ss, SHEETS.DUTY_SESSIONS, HEADERS.DutySessions);
+  ensureSheet_(ss, SHEETS.DUTY_MEMBERS, HEADERS.DutyMembers);
+}
 function isPhase1Ready_() { return !!SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SHEETS.STUDENTS); }
 function getSheet_(name) { const s = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(name); if (!s) throw new Error(`${name} シートがありません。`); return s; }
 function ensureSheet_(ss, name, headers) {
   let sheet = ss.getSheetByName(name);
   if (!sheet) sheet = ss.insertSheet(name);
-  if (sheet.getLastRow() === 0) sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-  sheet.setFrozenRows(1);
-  sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold').setBackground('#1d4ed8').setFontColor('#ffffff');
+  if (sheet.getLastRow() === 0) {
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+    sheet.setFrozenRows(1);
+    sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold').setBackground('#1d4ed8').setFontColor('#ffffff');
+  }
   return sheet;
 }
 function valuesAsObjects_(sheet) {
