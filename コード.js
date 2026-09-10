@@ -227,37 +227,69 @@ function api_setAssignmentStatus(assignmentId, status) {
 }
 
 function api_scanSubmission(data) {
+  const batch = api_scanSubmissionsBatch({ assignmentId: data.assignmentId, barcodes: [data.barcode] });
+  const result = batch.results[0] || { success: false, type: 'INVALID', message: '読み取りデータがありません。' };
+  result.count = batch.count;
+  return result;
+}
+
+/** 連続読取用。一度の通信で複数件を検証し、一括保存する。 */
+function api_scanSubmissionsBatch(data) {
   assertTeacher_();
   ensureReady_();
   const assignmentId = String(data.assignmentId || '');
-  const barcode = String(data.barcode || '').trim();
-  if (!/^\d{4}$/.test(barcode)) return { success: false, type: 'INVALID', message: '4桁のバーコードを読み取ってください。' };
+  const barcodes = Array.isArray(data.barcodes) ? data.barcodes.slice(0, 100).map(v => String(v || '').trim()) : [];
+  if (!barcodes.length) return { results: [], count: submissionCount_(assignmentId) };
 
   const lock = LockService.getScriptLock();
-  lock.waitLock(10000);
+  lock.waitLock(30000);
   try {
     const assignment = listAssignments_().find(a => a.assignmentId === assignmentId);
-    if (!assignment) return { success: false, type: 'NOT_FOUND', message: '課題が見つかりません。' };
-    if (assignment.status !== 'OPEN') return { success: false, type: 'CLOSED', message: 'この課題は受付中ではありません。' };
+    if (!assignment) return { results: barcodes.map(barcode => ({ barcode, success: false, type: 'NOT_FOUND', message: '課題が見つかりません。' })), count: 0 };
+    if (assignment.status !== 'OPEN') return { results: barcodes.map(barcode => ({ barcode, success: false, type: 'CLOSED', message: 'この課題は受付中ではありません。' })), count: submissionCount_(assignmentId) };
 
-    const student = listStudents_().find(s => s.barcode === barcode && s.isActive);
-    if (!student) return { success: false, type: 'STUDENT_NOT_FOUND', message: `バーコード ${barcode} の児童が見つかりません。` };
-    if (Number(student.grade) !== Number(assignment.targetGrade) || Number(student.class) !== Number(assignment.targetClass)) {
-      return { success: false, type: 'OUT_OF_TARGET', message: `${student.name}さんは、この課題の対象クラスではありません。`, student };
+    const studentByBarcode = {};
+    listStudents_().filter(s => s.isActive).forEach(s => studentByBarcode[s.barcode] = s);
+    const submissionSheet = getSheet_(SHEETS.SUBMISSIONS);
+    const existingStudentIds = new Set(valuesAsObjects_(submissionSheet)
+      .filter(r => String(r.assignmentId) === assignmentId && String(r.status) === 'SUBMITTED')
+      .map(r => String(r.studentId)));
+    const newRows = [], auditRows = [], results = [], now = new Date(), operator = currentEmail_();
+
+    barcodes.forEach(barcode => {
+      if (!/^\d{4}$/.test(barcode)) {
+        results.push({ barcode, success: false, type: 'INVALID', message: `${barcode || '空欄'}：4桁のバーコードではありません。` });
+        return;
+      }
+      const student = studentByBarcode[barcode];
+      if (!student) {
+        results.push({ barcode, success: false, type: 'STUDENT_NOT_FOUND', message: `${barcode}：児童が見つかりません。` });
+        return;
+      }
+      if (Number(student.grade) !== Number(assignment.targetGrade) || Number(student.class) !== Number(assignment.targetClass)) {
+        results.push({ barcode, success: false, type: 'OUT_OF_TARGET', message: `${student.name}さん：対象クラスではありません。`, student });
+        return;
+      }
+      if (existingStudentIds.has(student.studentId)) {
+        results.push({ barcode, success: false, type: 'DUPLICATE', message: `${student.name}さん：登録済みです。`, student });
+        return;
+      }
+      existingStudentIds.add(student.studentId);
+      const record = {
+        submissionId: Utilities.getUuid(), assignmentId, studentId: student.studentId, barcode,
+        submittedAt: now, method: 'TEACHER', operator, status: 'SUBMITTED'
+      };
+      newRows.push(objectToRow_(record, HEADERS.Submissions));
+      auditRows.push([now, 'SCAN_SUBMISSION', assignmentId, student.studentId, '', 'SUBMITTED', operator]);
+      results.push({ barcode, success: true, type: 'SUCCESS', message: `${student.name}さんを登録しました。`, student });
+    });
+
+    if (newRows.length) submissionSheet.getRange(submissionSheet.getLastRow() + 1, 1, newRows.length, HEADERS.Submissions.length).setValues(newRows);
+    if (auditRows.length) {
+      const auditSheet = getSheet_(SHEETS.AUDIT);
+      auditSheet.getRange(auditSheet.getLastRow() + 1, 1, auditRows.length, HEADERS.AuditLog.length).setValues(auditRows);
     }
-
-    const active = valuesAsObjects_(getSheet_(SHEETS.SUBMISSIONS)).find(r =>
-      String(r.assignmentId) === assignmentId && String(r.studentId) === student.studentId && String(r.status) === 'SUBMITTED'
-    );
-    if (active) return { success: false, type: 'DUPLICATE', message: `${student.name}さんは登録済みです。`, student };
-
-    const record = {
-      submissionId: Utilities.getUuid(), assignmentId, studentId: student.studentId, barcode,
-      submittedAt: new Date(), method: 'TEACHER', operator: currentEmail_(), status: 'SUBMITTED'
-    };
-    getSheet_(SHEETS.SUBMISSIONS).appendRow(objectToRow_(record, HEADERS.Submissions));
-    logAudit_('SCAN_SUBMISSION', assignmentId, student.studentId, '', 'SUBMITTED');
-    return { success: true, message: `${student.name}さんを登録しました。`, student, count: submissionCount_(assignmentId) };
+    return { results, count: existingStudentIds.size, saved: newRows.length };
   } finally {
     lock.releaseLock();
   }
