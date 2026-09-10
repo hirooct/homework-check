@@ -6,6 +6,7 @@ const SHEETS = {
   LEGACY_ACCOUNT: 'アカウント',
   STUDENTS: 'Students',
   ASSIGNMENTS: 'Assignments',
+  TARGETS: 'AssignmentTargets',
   SUBMISSIONS: 'Submissions',
   AUDIT: 'AuditLog'
 };
@@ -13,6 +14,7 @@ const SHEETS = {
 const HEADERS = {
   Students: ['studentId', 'barcode', 'grade', 'class', 'number', 'name', 'studentEmail', 'parentEmail', 'isActive'],
   Assignments: ['assignmentId', 'date', 'subject', 'title', 'targetGrade', 'targetClass', 'status', 'createdAt', 'createdBy'],
+  AssignmentTargets: ['assignmentId', 'studentId', 'barcode', 'targetedAt'],
   Submissions: ['submissionId', 'assignmentId', 'studentId', 'barcode', 'submittedAt', 'method', 'operator', 'status'],
   AuditLog: ['at', 'action', 'assignmentId', 'studentId', 'before', 'after', 'operator']
 };
@@ -47,15 +49,19 @@ function api_getMyStatus() {
   }
 
   if (isPhase1Ready_() && listAssignments_().length) {
-    const student = listStudents_().find(s => s.barcode === barcode && s.isActive);
+    ensureAllAssignmentTargets_();
+    const student = listStudents_().find(s => s.barcode === barcode);
     if (!student) {
       return { success: false, code: 'STUDENT_NOT_FOUND', message: `バーコード ${barcode} の児童情報が見つかりません。` };
     }
     const submittedIds = new Set(valuesAsObjects_(getSheet_(SHEETS.SUBMISSIONS))
       .filter(r => String(r.studentId) === student.studentId && String(r.status) === 'SUBMITTED')
       .map(r => String(r.assignmentId)));
+    const targetAssignmentIds = new Set(valuesAsObjects_(getSheet_(SHEETS.TARGETS))
+      .filter(r => String(r.studentId) === student.studentId)
+      .map(r => String(r.assignmentId)));
     const rows = listAssignments_()
-      .filter(a => Number(a.targetGrade) === student.grade && Number(a.targetClass) === student.class)
+      .filter(a => targetAssignmentIds.has(a.assignmentId))
       .map(a => ({
         assignmentId: a.assignmentId, date: a.date, dateLabel: a.dateLabel, subject: a.subject,
         title: a.title, assignmentStatus: a.status, submitted: submittedIds.has(a.assignmentId)
@@ -180,6 +186,7 @@ function api_getBootstrap() {
   assertTeacher_();
   const ready = isPhase1Ready_();
   if (!ready) return { ready: false, email: currentEmail_() };
+  ensureAllAssignmentTargets_();
   return {
     ready: true,
     email: currentEmail_(),
@@ -246,6 +253,7 @@ function api_createAssignment(data) {
   };
   if (!record.targetGrade || !record.targetClass) throw new Error('対象の学年・組を選択してください。');
   getSheet_(SHEETS.ASSIGNMENTS).appendRow(objectToRow_(record, HEADERS.Assignments));
+  createAssignmentTargets_(record);
   logAudit_('CREATE_ASSIGNMENT', record.assignmentId, '', '', JSON.stringify(record));
   return { success: true, assignment: serialize_(record) };
 }
@@ -288,6 +296,10 @@ function api_scanSubmissionsBatch(data) {
 
     const studentByBarcode = {};
     listStudents_().filter(s => s.isActive).forEach(s => studentByBarcode[s.barcode] = s);
+    ensureAllAssignmentTargets_();
+    const targetStudentIds = new Set(valuesAsObjects_(getSheet_(SHEETS.TARGETS))
+      .filter(r => String(r.assignmentId) === assignmentId)
+      .map(r => String(r.studentId)));
     const submissionSheet = getSheet_(SHEETS.SUBMISSIONS);
     const existingStudentIds = new Set(valuesAsObjects_(submissionSheet)
       .filter(r => String(r.assignmentId) === assignmentId && String(r.status) === 'SUBMITTED')
@@ -304,8 +316,8 @@ function api_scanSubmissionsBatch(data) {
         results.push({ barcode, success: false, type: 'STUDENT_NOT_FOUND', message: `${barcode}：児童が見つかりません。` });
         return;
       }
-      if (Number(student.grade) !== Number(assignment.targetGrade) || Number(student.class) !== Number(assignment.targetClass)) {
-        results.push({ barcode, success: false, type: 'OUT_OF_TARGET', message: `${student.name}さん：対象クラスではありません。`, student });
+      if (!targetStudentIds.has(student.studentId)) {
+        results.push({ barcode, success: false, type: 'OUT_OF_TARGET', message: `${student.name}さん：この課題の対象ではありません。`, student });
         return;
       }
       if (existingStudentIds.has(student.studentId)) {
@@ -352,13 +364,17 @@ function api_undoLastSubmission(assignmentId) {
 function api_getAssignmentStatus(assignmentId) {
   assertTeacher_();
   ensureReady_();
+  ensureAllAssignmentTargets_();
   const assignment = listAssignments_().find(a => a.assignmentId === String(assignmentId));
   if (!assignment) throw new Error('課題が見つかりません。');
   const submittedIds = new Set(valuesAsObjects_(getSheet_(SHEETS.SUBMISSIONS))
     .filter(r => String(r.assignmentId) === assignment.assignmentId && String(r.status) === 'SUBMITTED')
     .map(r => String(r.studentId)));
+  const targetIds = new Set(valuesAsObjects_(getSheet_(SHEETS.TARGETS))
+    .filter(r => String(r.assignmentId) === assignment.assignmentId)
+    .map(r => String(r.studentId)));
   const rows = listStudents_()
-    .filter(s => s.isActive && Number(s.grade) === Number(assignment.targetGrade) && Number(s.class) === Number(assignment.targetClass))
+    .filter(s => targetIds.has(s.studentId))
     .sort((a, b) => Number(a.number) - Number(b.number))
     .map(s => Object.assign({}, s, { submitted: submittedIds.has(s.studentId) }));
   return { assignment, rows, submitted: rows.filter(r => r.submitted).length, total: rows.length };
@@ -368,18 +384,27 @@ function api_getAssignmentStatus(assignmentId) {
 function api_getStatusOverview(filters) {
   assertTeacher_();
   ensureReady_();
+  ensureAllAssignmentTargets_();
   filters = filters || {};
   let assignments = listAssignments_();
   if (filters.date) assignments = assignments.filter(a => a.date === String(filters.date));
   if (filters.assignmentId) assignments = assignments.filter(a => a.assignmentId === String(filters.assignmentId));
 
-  const students = listStudents_().filter(s => s.isActive);
+  const students = listStudents_();
+  const studentById = {};
+  students.forEach(s => studentById[s.studentId] = s);
+  const targetsByAssignment = {};
+  valuesAsObjects_(getSheet_(SHEETS.TARGETS)).forEach(r => {
+    const id = String(r.assignmentId);
+    if (!targetsByAssignment[id]) targetsByAssignment[id] = new Set();
+    targetsByAssignment[id].add(String(r.studentId));
+  });
   const submittedKeys = new Set(valuesAsObjects_(getSheet_(SHEETS.SUBMISSIONS))
     .filter(r => String(r.status) === 'SUBMITTED')
     .map(r => `${r.assignmentId}|${r.studentId}`));
   let rows = [];
   assignments.forEach(a => {
-    students.filter(s => Number(s.grade) === Number(a.targetGrade) && Number(s.class) === Number(a.targetClass)).forEach(s => {
+    Array.from(targetsByAssignment[a.assignmentId] || []).map(id => studentById[id]).filter(Boolean).forEach(s => {
       if (filters.barcode && s.barcode !== String(filters.barcode)) return;
       rows.push({
         assignmentId: a.assignmentId, date: a.date, dateLabel: a.dateLabel, subject: a.subject,
@@ -563,7 +588,37 @@ function normalizeLegacyDate_(value, schoolYear) {
   return Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy-MM-dd');
 }
 
-function ensureReady_() { if (!isPhase1Ready_()) throw new Error('先に「初期設定を実行」を押してください。'); }
+function ensureTargetsSheet_() {
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  return ensureSheet_(ss, SHEETS.TARGETS, HEADERS.AssignmentTargets);
+}
+
+/** 既存課題に対象者が未保存の場合だけ、現在の名簿から一度限り補完する。 */
+function ensureAllAssignmentTargets_() {
+  const targetSheet = ensureTargetsSheet_();
+  const targetedAssignments = new Set(valuesAsObjects_(targetSheet).map(r => String(r.assignmentId)));
+  const students = listStudents_().filter(s => s.isActive);
+  const rows = [];
+  listAssignments_().forEach(a => {
+    if (targetedAssignments.has(a.assignmentId)) return;
+    students
+      .filter(s => s.grade === Number(a.targetGrade) && s.class === Number(a.targetClass))
+      .forEach(s => rows.push([a.assignmentId, s.studentId, s.barcode, new Date()]));
+  });
+  if (rows.length) targetSheet.getRange(targetSheet.getLastRow() + 1, 1, rows.length, HEADERS.AssignmentTargets.length).setValues(rows);
+  return rows.length;
+}
+
+function createAssignmentTargets_(assignment) {
+  const targetSheet = ensureTargetsSheet_();
+  const rows = listStudents_()
+    .filter(s => s.isActive && s.grade === Number(assignment.targetGrade) && s.class === Number(assignment.targetClass))
+    .map(s => [assignment.assignmentId, s.studentId, s.barcode, new Date()]);
+  if (rows.length) targetSheet.getRange(targetSheet.getLastRow() + 1, 1, rows.length, HEADERS.AssignmentTargets.length).setValues(rows);
+  return rows.length;
+}
+
+function ensureReady_() { if (!isPhase1Ready_()) throw new Error('先に「初期設定を実行」を押してください。'); ensureTargetsSheet_(); }
 function isPhase1Ready_() { return !!SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SHEETS.STUDENTS); }
 function getSheet_(name) { const s = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(name); if (!s) throw new Error(`${name} シートがありません。`); return s; }
 function ensureSheet_(ss, name, headers) {
