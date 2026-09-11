@@ -313,6 +313,101 @@ function api_createAssignment(data) {
   return { success: true, assignment: serialize_(record) };
 }
 
+/** 既存課題を編集する。提出履歴がある課題の対象クラス変更は整合性保護のため許可しない。 */
+function api_updateAssignment(data) {
+  assertTeacher_();
+  ensureReady_();
+  const assignmentId = String(data.assignmentId || '');
+  const date = normalizeDate_(data.date);
+  const title = String(data.title || '').trim();
+  const status = String(data.status || 'OPEN');
+  if (!assignmentId) throw new Error('課題IDがありません。');
+  if (!date) throw new Error('提出日を入力してください。');
+  if (!title) throw new Error('課題名を入力してください。');
+  if (!['DRAFT', 'OPEN', 'CLOSED', 'ARCHIVED'].includes(status)) throw new Error('課題の状態が不正です。');
+
+  const sheet = getSheet_(SHEETS.ASSIGNMENTS);
+  const rows = valuesAsObjects_(sheet);
+  const index = rows.findIndex(r => String(r.assignmentId) === assignmentId);
+  if (index < 0) throw new Error('課題が見つかりません。');
+  const before = rows[index];
+  const record = {
+    assignmentId,
+    date,
+    subject: String(data.subject || '').trim(),
+    title,
+    targetGrade: Number(data.targetGrade),
+    targetClass: Number(data.targetClass),
+    status,
+    createdAt: before.createdAt,
+    createdBy: before.createdBy
+  };
+  if (!record.targetGrade || !record.targetClass) throw new Error('対象の学年・組を選択してください。');
+
+  const targetChanged = Number(before.targetGrade) !== record.targetGrade || Number(before.targetClass) !== record.targetClass;
+  if (targetChanged) {
+    const hasSubmissionHistory = valuesAsObjects_(getSheet_(SHEETS.SUBMISSIONS)).some(r => String(r.assignmentId) === assignmentId);
+    const hasDutyHistory = valuesAsObjects_(getSheet_(SHEETS.DUTY_SESSIONS)).some(r => String(r.assignmentId) === assignmentId);
+    if (hasSubmissionHistory || hasDutyHistory) {
+      throw new Error('提出記録または当番設定があるため、対象学年・組は変更できません。日付・課題名などは変更できます。');
+    }
+  }
+
+  sheet.getRange(index + 2, 1, 1, HEADERS.Assignments.length).setValues([objectToRow_(record, HEADERS.Assignments)]);
+  if (targetChanged) {
+    deleteDataRowsWhere_(SHEETS.TARGETS, r => String(r.assignmentId) === assignmentId);
+    createAssignmentTargets_(record);
+  }
+  logAudit_('UPDATE_ASSIGNMENT', assignmentId, '', JSON.stringify(before), JSON.stringify(record));
+  record.dateLabel = formatDateLabel_(record.date);
+  return { success: true, assignment: serialize_(record) };
+}
+
+/** 課題削除前に、同時に削除される関連データ件数を返す。 */
+function api_getAssignmentDeleteImpact(assignmentIdValue) {
+  assertTeacher_();
+  ensureReady_();
+  const assignmentId = String(assignmentIdValue || '');
+  const assignment = listAssignments_().find(a => a.assignmentId === assignmentId);
+  if (!assignment) throw new Error('課題が見つかりません。');
+  const sessions = valuesAsObjects_(getSheet_(SHEETS.DUTY_SESSIONS)).filter(r => String(r.assignmentId) === assignmentId);
+  const sessionIds = new Set(sessions.map(r => String(r.dutySessionId)));
+  const submissions = valuesAsObjects_(getSheet_(SHEETS.SUBMISSIONS)).filter(r => String(r.assignmentId) === assignmentId);
+  return {
+    assignment,
+    targetCount: valuesAsObjects_(getSheet_(SHEETS.TARGETS)).filter(r => String(r.assignmentId) === assignmentId).length,
+    submittedCount: submissions.filter(r => String(r.status) === 'SUBMITTED').length,
+    submissionHistoryCount: submissions.length,
+    dutySessionCount: sessions.length,
+    dutyMemberCount: valuesAsObjects_(getSheet_(SHEETS.DUTY_MEMBERS)).filter(r => sessionIds.has(String(r.dutySessionId))).length
+  };
+}
+
+/** 課題と関連データをまとめて削除する。課題名の再確認で誤操作を防ぐ。 */
+function api_deleteAssignment(data) {
+  assertTeacher_();
+  ensureReady_();
+  const assignmentId = String(data.assignmentId || '');
+  const impact = api_getAssignmentDeleteImpact(assignmentId);
+  if (String(data.confirmTitle || '') !== impact.assignment.title) throw new Error('確認用の課題名が一致しません。');
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const sessions = valuesAsObjects_(getSheet_(SHEETS.DUTY_SESSIONS)).filter(r => String(r.assignmentId) === assignmentId);
+    const sessionIds = new Set(sessions.map(r => String(r.dutySessionId)));
+    deleteDataRowsWhere_(SHEETS.DUTY_MEMBERS, r => sessionIds.has(String(r.dutySessionId)));
+    deleteDataRowsWhere_(SHEETS.DUTY_SESSIONS, r => String(r.assignmentId) === assignmentId);
+    deleteDataRowsWhere_(SHEETS.SUBMISSIONS, r => String(r.assignmentId) === assignmentId);
+    deleteDataRowsWhere_(SHEETS.TARGETS, r => String(r.assignmentId) === assignmentId);
+    deleteDataRowsWhere_(SHEETS.ASSIGNMENTS, r => String(r.assignmentId) === assignmentId);
+    logAudit_('DELETE_ASSIGNMENT', assignmentId, '', JSON.stringify(impact.assignment), JSON.stringify(impact));
+    return { success: true, deleted: impact };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 function api_setAssignmentStatus(assignmentId, status) {
   assertTeacher_();
   ensureReady_();
@@ -758,6 +853,18 @@ function valuesAsObjects_(sheet) {
   if (sheet.getLastRow() < 2) return [];
   const values = sheet.getDataRange().getValues(), headers = values[0].map(String);
   return values.slice(1).filter(r => r.some(v => v !== '')).map(r => headers.reduce((o, h, i) => (o[h] = r[i], o), {}));
+}
+function deleteDataRowsWhere_(sheetName, predicate) {
+  const sheet = getSheet_(sheetName);
+  const rows = valuesAsObjects_(sheet);
+  let deleted = 0;
+  for (let i = rows.length - 1; i >= 0; i--) {
+    if (predicate(rows[i])) {
+      sheet.deleteRow(i + 2);
+      deleted++;
+    }
+  }
+  return deleted;
 }
 function objectToRow_(obj, headers) { return headers.map(h => obj[h] === undefined ? '' : obj[h]); }
 function normalizeEmail_(value) { return String(value || '').trim().toLowerCase(); }
