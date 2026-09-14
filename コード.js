@@ -1,5 +1,8 @@
 const SPREADSHEET_ID = '1dDpuYzT9wRAegTDS6JZDqtmBgurI-qWojVrlAnU8S20';
 const TEACHER_EMAILS = ['h953420@g.himeji-hyg.ed.jp'];
+const TEACHER_AUTH_CACHE_KEY = 'HOMEWORK_CHECK_TEACHER_AUTH';
+const TEACHER_PASSWORD_PROPERTY = 'HOMEWORK_CHECK_TEACHER_PASSWORD_HASH';
+const DEFAULT_TEACHER_PASSWORD = 'teacher';
 
 const SHEETS = {
   LEGACY_STATUS: '提出状況',
@@ -31,6 +34,54 @@ function doGet(e) {
   return template.evaluate()
     .setTitle('提出状況確認アプリ')
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+}
+
+/** 教師画面の二段階ログイン状態。Googleアカウントとアプリ内パスワードの両方を確認する。 */
+function api_getTeacherLoginState() {
+  const email = currentEmail_();
+  const allowed = isTeacherAccount_(email);
+  return {
+    email,
+    allowed,
+    authenticated: allowed && isTeacherAuthenticated_(),
+    usingDefaultPassword: !PropertiesService.getScriptProperties().getProperty(TEACHER_PASSWORD_PROPERTY)
+  };
+}
+
+function api_loginTeacher(data) {
+  const email = currentEmail_();
+  const account = normalizeEmail_(data && data.account);
+  const password = String(data && data.password || '');
+  const cache = CacheService.getUserCache();
+  const failureKey = 'HOMEWORK_CHECK_LOGIN_FAILURES';
+  const failures = Number(cache.get(failureKey) || 0);
+  if (failures >= 5) throw new Error('ログイン失敗が続いたため、5分後にもう一度お試しください。');
+  if (!email || account !== email || !isTeacherAccount_(email) || hashTeacherPassword_(password) !== getTeacherPasswordHash_()) {
+    cache.put(failureKey, String(failures + 1), 300);
+    throw new Error('アカウントまたはパスワードが正しくありません。');
+  }
+  cache.remove(failureKey);
+  cache.put(TEACHER_AUTH_CACHE_KEY, getTeacherPasswordHash_(), 21600);
+  return api_getTeacherLoginState();
+}
+
+function api_logoutTeacher() {
+  CacheService.getUserCache().remove(TEACHER_AUTH_CACHE_KEY);
+  return { success: true };
+}
+
+function api_changeTeacherPassword(data) {
+  assertTeacher_();
+  const currentPassword = String(data && data.currentPassword || '');
+  const newPassword = String(data && data.newPassword || '');
+  if (hashTeacherPassword_(currentPassword) !== getTeacherPasswordHash_()) throw new Error('現在のパスワードが正しくありません。');
+  if (newPassword.length < 6) throw new Error('新しいパスワードは6文字以上にしてください。');
+  if (newPassword === DEFAULT_TEACHER_PASSWORD) throw new Error('初期パスワードとは別のパスワードを設定してください。');
+  const newHash = hashTeacherPassword_(newPassword);
+  PropertiesService.getScriptProperties().setProperty(TEACHER_PASSWORD_PROPERTY, newHash);
+  CacheService.getUserCache().put(TEACHER_AUTH_CACHE_KEY, newHash, 21600);
+  logAudit_('CHANGE_TEACHER_PASSWORD', '', '', '', 'PASSWORD_CHANGED');
+  return { success: true };
 }
 
 /** ログイン中の児童・保護者本人にひもづく最新データだけを返す。 */
@@ -1042,7 +1093,21 @@ function columnLetter_(column) {
 }
 function normalizeEmail_(value) { return String(value || '').trim().toLowerCase(); }
 function currentEmail_() { return normalizeEmail_(Session.getActiveUser().getEmail()); }
-function assertTeacher_() { if (!TEACHER_EMAILS.includes(currentEmail_())) throw new Error('教師用機能を利用する権限がありません。'); }
+function isTeacherAccount_(email) { return TEACHER_EMAILS.map(normalizeEmail_).includes(normalizeEmail_(email)); }
+function hashTeacherPassword_(password) {
+  return Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, `HOMEWORK_CHECK_V2|${String(password || '')}`, Utilities.Charset.UTF_8)
+    .map(b => (`0${((b + 256) % 256).toString(16)}`).slice(-2)).join('');
+}
+function getTeacherPasswordHash_() {
+  return PropertiesService.getScriptProperties().getProperty(TEACHER_PASSWORD_PROPERTY) || hashTeacherPassword_(DEFAULT_TEACHER_PASSWORD);
+}
+function isTeacherAuthenticated_() {
+  return CacheService.getUserCache().get(TEACHER_AUTH_CACHE_KEY) === getTeacherPasswordHash_();
+}
+function assertTeacher_() {
+  if (!isTeacherAccount_(currentEmail_())) throw new Error('教師用機能を利用する権限がありません。');
+  if (!isTeacherAuthenticated_()) throw new Error('教師用パスワードでログインしてください。');
+}
 function parseBarcode_(code) { return { grade: Number(code[0]), classNo: Number(code[1]), number: Number(code.slice(2)) }; }
 function toBool_(v) { return v === true || String(v).toUpperCase() === 'TRUE' || String(v) === '1'; }
 function normalizeDate_(v) {
