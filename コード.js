@@ -313,6 +313,60 @@ function api_createAssignment(data) {
   return { success: true, assignment: serialize_(record) };
 }
 
+/** 複数課題を一度に登録する。課題・対象児童・監査ログをそれぞれ一括書込する。 */
+function api_createAssignmentsBatch(data) {
+  assertTeacher_();
+  ensureReady_();
+  const date = normalizeDate_(data && data.date);
+  const targetGrade = Number(data && data.targetGrade);
+  const targetClass = Number(data && data.targetClass);
+  const status = String(data && data.status || 'OPEN');
+  const items = Array.isArray(data && data.items) ? data.items.slice(0, 30) : [];
+  if (!date) throw new Error('提出日を入力してください。');
+  if (!targetGrade || !targetClass) throw new Error('対象の学年・組を選択してください。');
+  if (!['DRAFT', 'OPEN', 'CLOSED', 'ARCHIVED'].includes(status)) throw new Error('課題の状態が不正です。');
+  const cleaned = items.map(x => ({ subject: String(x.subject || '').trim(), title: String(x.title || '').trim() })).filter(x => x.title);
+  if (!cleaned.length) throw new Error('課題を1件以上入力してください。');
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const duplicateKeys = new Set(listAssignments_().map(a => [a.date, a.targetGrade, a.targetClass, a.title].join('|')));
+    const localKeys = new Set(), now = new Date(), operator = currentEmail_();
+    const created = [], skipped = [];
+    cleaned.forEach(item => {
+      const key = [date, targetGrade, targetClass, item.title].join('|');
+      if (duplicateKeys.has(key) || localKeys.has(key)) {
+        skipped.push(item.title);
+        return;
+      }
+      localKeys.add(key);
+      created.push({
+        assignmentId: Utilities.getUuid(), date, subject: item.subject, title: item.title,
+        targetGrade, targetClass, status, createdAt: now, createdBy: operator
+      });
+    });
+    if (!created.length) return { success: true, created: [], skipped, message: '同じ課題がすでに登録されています。' };
+
+    const assignmentSheet = getSheet_(SHEETS.ASSIGNMENTS);
+    assignmentSheet.getRange(assignmentSheet.getLastRow() + 1, 1, created.length, HEADERS.Assignments.length)
+      .setValues(created.map(r => objectToRow_(r, HEADERS.Assignments)));
+    const students = listStudents_().filter(s => s.isActive && s.grade === targetGrade && s.class === targetClass);
+    const targetRows = [];
+    created.forEach(a => students.forEach(s => targetRows.push([a.assignmentId, s.studentId, s.barcode, now])));
+    if (targetRows.length) {
+      const targetSheet = getSheet_(SHEETS.TARGETS);
+      targetSheet.getRange(targetSheet.getLastRow() + 1, 1, targetRows.length, HEADERS.AssignmentTargets.length).setValues(targetRows);
+    }
+    const auditRows = created.map(a => [now, 'CREATE_ASSIGNMENT_BATCH', a.assignmentId, '', '', JSON.stringify(a), operator]);
+    const auditSheet = getSheet_(SHEETS.AUDIT);
+    auditSheet.getRange(auditSheet.getLastRow() + 1, 1, auditRows.length, HEADERS.AuditLog.length).setValues(auditRows);
+    return { success: true, created: serialize_(created), skipped };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 /** 既存課題を編集する。提出履歴がある課題の対象クラス変更は整合性保護のため許可しない。 */
 function api_updateAssignment(data) {
   assertTeacher_();
@@ -647,9 +701,10 @@ function api_setManualSubmissionsBatch(data) {
         return;
       }
       existingKeys.add(key);
-      newRows.push([Utilities.getUuid(), assignmentId, student.studentId, barcode, now, 'MANUAL_BATCH', operator, 'SUBMITTED']);
+      const submissionId = Utilities.getUuid();
+      newRows.push([submissionId, assignmentId, student.studentId, barcode, now, 'MANUAL_BATCH', operator, 'SUBMITTED']);
       auditRows.push([now, 'MANUAL_BATCH_SUBMIT', assignmentId, student.studentId, '', 'SUBMITTED', operator]);
-      results.push({ assignmentId, barcode, success: true, alreadySubmitted: false });
+      results.push({ assignmentId, barcode, submissionId, success: true, alreadySubmitted: false });
     });
 
     if (newRows.length) submissionSheet.getRange(submissionSheet.getLastRow() + 1, 1, newRows.length, HEADERS.Submissions.length).setValues(newRows);
@@ -658,6 +713,35 @@ function api_setManualSubmissionsBatch(data) {
       auditSheet.getRange(auditSheet.getLastRow() + 1, 1, auditRows.length, HEADERS.AuditLog.length).setValues(auditRows);
     }
     return { success: true, saved: newRows.length, results, failed: results.filter(r => !r.success).length };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** 直前の一括提出変更を、発行した提出ID単位で安全に取り消す。 */
+function api_undoManualSubmissionsBatch(data) {
+  assertTeacher_();
+  ensureReady_();
+  const ids = new Set((Array.isArray(data && data.submissionIds) ? data.submissionIds : []).slice(0, 500).map(String));
+  if (!ids.size) throw new Error('取り消す一括変更がありません。');
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const sheet = getSheet_(SHEETS.SUBMISSIONS), rows = valuesAsObjects_(sheet);
+    const statusColumn = HEADERS.Submissions.indexOf('status') + 1;
+    const targets = [];
+    rows.forEach((r, i) => {
+      if (ids.has(String(r.submissionId)) && String(r.status) === 'SUBMITTED' && String(r.method) === 'MANUAL_BATCH') {
+        targets.push({ row: i + 2, assignmentId: String(r.assignmentId), studentId: String(r.studentId), barcode: String(r.barcode), submissionId: String(r.submissionId) });
+      }
+    });
+    if (!targets.length) return { success: false, undone: 0, rows: [], message: '取り消せる提出記録がありません。' };
+    sheet.getRangeList(targets.map(t => `${columnLetter_(statusColumn)}${t.row}`)).setValue('CANCELLED');
+    const now = new Date(), operator = currentEmail_();
+    const auditRows = targets.map(t => [now, 'UNDO_MANUAL_BATCH_SUBMIT', t.assignmentId, t.studentId, 'SUBMITTED', 'CANCELLED', operator]);
+    const auditSheet = getSheet_(SHEETS.AUDIT);
+    auditSheet.getRange(auditSheet.getLastRow() + 1, 1, auditRows.length, HEADERS.AuditLog.length).setValues(auditRows);
+    return { success: true, undone: targets.length, rows: targets };
   } finally {
     lock.releaseLock();
   }
@@ -926,6 +1010,11 @@ function deleteDataRowsWhere_(sheetName, predicate) {
   return deleted;
 }
 function objectToRow_(obj, headers) { return headers.map(h => obj[h] === undefined ? '' : obj[h]); }
+function columnLetter_(column) {
+  let n = Number(column), result = '';
+  while (n > 0) { n--; result = String.fromCharCode(65 + n % 26) + result; n = Math.floor(n / 26); }
+  return result;
+}
 function normalizeEmail_(value) { return String(value || '').trim().toLowerCase(); }
 function currentEmail_() { return normalizeEmail_(Session.getActiveUser().getEmail()); }
 function assertTeacher_() { if (!TEACHER_EMAILS.includes(currentEmail_())) throw new Error('教師用機能を利用する権限がありません。'); }
