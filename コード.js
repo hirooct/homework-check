@@ -206,25 +206,50 @@ function api_getBootstrap() {
 }
 
 function api_createDutySession(data) {
+  data = data || {};
+  data.assignmentIds = [data.assignmentId];
+  return api_createDutySessions(data);
+}
+
+/** 複数課題を、同じ当番児童と終了時刻でまとめて割り当てる。 */
+function api_createDutySessions(data) {
   assertTeacher_();
   ensureReady_();
-  const assignmentId = String(data.assignmentId || '');
-  const assignment = listAssignments_().find(a => a.assignmentId === assignmentId);
-  if (!assignment) throw new Error('課題が見つかりません。');
-  if (assignment.status !== 'OPEN') throw new Error('受付中の課題を選択してください。');
+  const assignmentIds = Array.from(new Set(Array.isArray(data.assignmentIds) ? data.assignmentIds.map(String) : [])).slice(0, 30);
+  if (!assignmentIds.length) throw new Error('課題を1件以上選択してください。');
+  const assignmentById = {};
+  listAssignments_().forEach(a => assignmentById[a.assignmentId] = a);
+  const assignments = assignmentIds.map(id => assignmentById[id]).filter(Boolean);
+  if (assignments.length !== assignmentIds.length) throw new Error('選択した課題の一部が見つかりません。画面を更新してください。');
+  const unavailableAssignments = assignments.filter(a => a.status !== 'OPEN');
+  if (unavailableAssignments.length) throw new Error(`受付中ではない課題があります：${unavailableAssignments.map(a => a.title).join('、')}`);
   const studentIds = Array.from(new Set(Array.isArray(data.studentIds) ? data.studentIds.map(String) : []));
   if (!studentIds.length) throw new Error('当番児童を1人以上選択してください。');
   const students = listStudents_().filter(s => studentIds.includes(s.studentId));
+  if (students.length !== studentIds.length) throw new Error('選択した児童の一部が見つかりません。画面を更新してください。');
   const unavailable = students.filter(s => !normalizeEmail_(s.studentEmail));
   if (unavailable.length) throw new Error(`児童メールが未登録です：${unavailable.map(s => s.name).join('、')}`);
   const endsAt = new Date(data.endsAt);
   if (isNaN(endsAt) || endsAt <= new Date()) throw new Error('終了時刻を現在より後に設定してください。');
-  const now = new Date(), dutySessionId = Utilities.getUuid();
-  getSheet_(SHEETS.DUTY_SESSIONS).appendRow([dutySessionId, assignmentId, now, endsAt, 'OPEN', now, currentEmail_()]);
-  const memberRows = students.map(s => [dutySessionId, s.studentId, normalizeEmail_(s.studentEmail), now]);
-  getSheet_(SHEETS.DUTY_MEMBERS).getRange(getSheet_(SHEETS.DUTY_MEMBERS).getLastRow() + 1, 1, memberRows.length, HEADERS.DutyMembers.length).setValues(memberRows);
-  logAudit_('CREATE_DUTY_SESSION', assignmentId, '', '', JSON.stringify({ dutySessionId, studentIds }));
-  return { success: true, duty: getDutyAdminData_() };
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const now = new Date(), operator = currentEmail_();
+    const sessions = assignments.map(a => ({ dutySessionId: Utilities.getUuid(), assignmentId: a.assignmentId }));
+    const sessionRows = sessions.map(s => [s.dutySessionId, s.assignmentId, now, endsAt, 'OPEN', now, operator]);
+    const sessionSheet = getSheet_(SHEETS.DUTY_SESSIONS);
+    sessionSheet.getRange(sessionSheet.getLastRow() + 1, 1, sessionRows.length, HEADERS.DutySessions.length).setValues(sessionRows);
+    const memberRows = [];
+    sessions.forEach(session => students.forEach(s => memberRows.push([session.dutySessionId, s.studentId, normalizeEmail_(s.studentEmail), now])));
+    const memberSheet = getSheet_(SHEETS.DUTY_MEMBERS);
+    memberSheet.getRange(memberSheet.getLastRow() + 1, 1, memberRows.length, HEADERS.DutyMembers.length).setValues(memberRows);
+    const auditRows = sessions.map(s => [now, 'CREATE_DUTY_SESSION', s.assignmentId, '', '', JSON.stringify({ dutySessionId: s.dutySessionId, studentIds, assignmentCount: sessions.length }), operator]);
+    const auditSheet = getSheet_(SHEETS.AUDIT);
+    auditSheet.getRange(auditSheet.getLastRow() + 1, 1, auditRows.length, HEADERS.AuditLog.length).setValues(auditRows);
+    return { success: true, createdCount: sessions.length, duty: getDutyAdminData_() };
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function api_closeDutySession(dutySessionId) {
