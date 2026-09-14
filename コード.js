@@ -604,6 +604,65 @@ function api_setManualSubmission(data) {
   return { success: false, message: '提出記録が見つかりません。' };
 }
 
+/** 未提出をまとめて提出済みにする。一度の読込・一度の書込で通信待ちを減らす。 */
+function api_setManualSubmissionsBatch(data) {
+  assertTeacher_();
+  ensureReady_();
+  const items = Array.isArray(data && data.items) ? data.items.slice(0, 500) : [];
+  if (!items.length) throw new Error('提出済みにする児童を選択してください。');
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const assignments = {};
+    listAssignments_().forEach(a => assignments[a.assignmentId] = a);
+    const students = {};
+    listStudents_().filter(s => s.isActive).forEach(s => students[s.barcode] = s);
+    ensureAllAssignmentTargets_();
+    const targetKeys = new Set(valuesAsObjects_(getSheet_(SHEETS.TARGETS)).map(r => `${r.assignmentId}|${r.studentId}`));
+    const submissionSheet = getSheet_(SHEETS.SUBMISSIONS);
+    const existingKeys = new Set(valuesAsObjects_(submissionSheet)
+      .filter(r => String(r.status) === 'SUBMITTED')
+      .map(r => `${r.assignmentId}|${r.studentId}`));
+    const uniqueRequestKeys = new Set();
+    const newRows = [], auditRows = [], results = [], now = new Date(), operator = currentEmail_();
+
+    items.forEach(item => {
+      const assignmentId = String(item.assignmentId || ''), barcode = String(item.barcode || '').trim();
+      const assignment = assignments[assignmentId], student = students[barcode];
+      const requestKey = `${assignmentId}|${barcode}`;
+      if (uniqueRequestKeys.has(requestKey)) return;
+      uniqueRequestKeys.add(requestKey);
+      if (!assignment || !student) {
+        results.push({ assignmentId, barcode, success: false, message: '課題または児童が見つかりません。' });
+        return;
+      }
+      const key = `${assignmentId}|${student.studentId}`;
+      if (!targetKeys.has(key)) {
+        results.push({ assignmentId, barcode, success: false, message: `${student.name}さんは課題の対象外です。` });
+        return;
+      }
+      if (existingKeys.has(key)) {
+        results.push({ assignmentId, barcode, success: true, alreadySubmitted: true });
+        return;
+      }
+      existingKeys.add(key);
+      newRows.push([Utilities.getUuid(), assignmentId, student.studentId, barcode, now, 'MANUAL_BATCH', operator, 'SUBMITTED']);
+      auditRows.push([now, 'MANUAL_BATCH_SUBMIT', assignmentId, student.studentId, '', 'SUBMITTED', operator]);
+      results.push({ assignmentId, barcode, success: true, alreadySubmitted: false });
+    });
+
+    if (newRows.length) submissionSheet.getRange(submissionSheet.getLastRow() + 1, 1, newRows.length, HEADERS.Submissions.length).setValues(newRows);
+    if (auditRows.length) {
+      const auditSheet = getSheet_(SHEETS.AUDIT);
+      auditSheet.getRange(auditSheet.getLastRow() + 1, 1, auditRows.length, HEADERS.AuditLog.length).setValues(auditRows);
+    }
+    return { success: true, saved: newRows.length, results, failed: results.filter(r => !r.success).length };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 // 旧画面からの更新にも対応する。
 function updateStatus(data) {
   assertTeacher_();
