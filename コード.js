@@ -400,23 +400,25 @@ function api_scanDutyBatch(data) {
 function api_saveStudent(data) {
   assertTeacher_();
   ensureReady_();
-  const barcode = String(data.barcode || '').trim();
   const name = String(data.name || '').trim();
-  if (!/^\d{4}$/.test(barcode)) throw new Error('バーコードは4桁の数字で入力してください。');
   if (!name) throw new Error('児童名を入力してください。');
+  const grade = Number(data.grade), classNo = Number(data.class), number = Number(data.number);
+  if (!Number.isInteger(grade) || grade < 1 || grade > 6) throw new Error('学年は1～6で入力してください。');
+  if (!Number.isInteger(classNo) || classNo < 1 || classNo > 9) throw new Error('組は1～9で入力してください。');
+  if (!Number.isInteger(number) || number < 1 || number > 99) throw new Error('出席番号は1～99で入力してください。');
+  const barcode = `${grade}${classNo}${String(number).padStart(2, '0')}`;
 
   const sheet = getSheet_(SHEETS.STUDENTS);
   const rows = valuesAsObjects_(sheet);
   const duplicate = rows.find(r => String(r.barcode) === barcode && String(r.studentId) !== String(data.studentId || ''));
   if (duplicate) throw new Error(`バーコード ${barcode} はすでに使用されています。`);
 
-  const inferred = parseBarcode_(barcode);
   const record = {
     studentId: data.studentId || Utilities.getUuid(),
     barcode,
-    grade: Number(data.grade || inferred.grade),
-    class: Number(data.class || inferred.classNo),
-    number: Number(data.number || inferred.number),
+    grade,
+    class: classNo,
+    number,
     name,
     studentEmail: String(data.studentEmail || '').trim(),
     parentEmail: String(data.parentEmail || '').trim(),
