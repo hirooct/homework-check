@@ -3,6 +3,20 @@ const TEACHER_EMAILS = ['h953420@g.himeji-hyg.ed.jp'];
 const TEACHER_AUTH_CACHE_KEY = 'HOMEWORK_CHECK_TEACHER_AUTH';
 const TEACHER_PASSWORD_PROPERTY = 'HOMEWORK_CHECK_TEACHER_PASSWORD_HASH';
 const DEFAULT_TEACHER_PASSWORD = 'teacher';
+const DEFAULT_SETTINGS = {
+  APP_NAME: 'Homework Check', SCHOOL_NAME: '', DEFAULT_GRADE: '6', DEFAULT_CLASS: '3',
+  DEFAULT_SUBJECT: '国語', DEFAULT_ASSIGNMENT_STATUS: 'OPEN', DEFAULT_STATUS_PERIOD: 'MONTH',
+  DUTY_DURATION_MINUTES: '120', SCAN_AUTO_SUBMIT: 'TRUE', SCAN_BATCH_SIZE: '50',
+  CAMERA_COOLDOWN_MS: '2500', PRINT_TITLE: '宿題提出状況 個票',
+  PRINT_DEFAULT_MODE: 'ALL', PRINT_CONFIRMATION: 'TRUE'
+};
+const SETTING_DESCRIPTIONS = {
+  APP_NAME: 'アプリ名', SCHOOL_NAME: '学校名', DEFAULT_GRADE: '課題登録の初期学年', DEFAULT_CLASS: '課題登録の初期組',
+  DEFAULT_SUBJECT: '課題登録の初期教科', DEFAULT_ASSIGNMENT_STATUS: '課題登録の初期受付状態', DEFAULT_STATUS_PERIOD: '提出一覧の初期期間',
+  DUTY_DURATION_MINUTES: '当番チェックの初期利用時間（分）', SCAN_AUTO_SUBMIT: '4桁入力時の自動受付', SCAN_BATCH_SIZE: '一度に保存するスキャン件数',
+  CAMERA_COOLDOWN_MS: '同じコードを再読取できるまでの時間（ミリ秒）', PRINT_TITLE: '児童個票の表題',
+  PRINT_DEFAULT_MODE: '個票の初期表示内容', PRINT_CONFIRMATION: '個票に確認欄を表示'
+};
 
 const SHEETS = {
   LEGACY_STATUS: '提出状況',
@@ -13,7 +27,8 @@ const SHEETS = {
   DUTY_SESSIONS: 'DutySessions',
   DUTY_MEMBERS: 'DutyMembers',
   SUBMISSIONS: 'Submissions',
-  AUDIT: 'AuditLog'
+  AUDIT: 'AuditLog',
+  SETTINGS: 'Settings'
 };
 
 const HEADERS = {
@@ -23,7 +38,8 @@ const HEADERS = {
   DutySessions: ['dutySessionId', 'assignmentId', 'startsAt', 'endsAt', 'status', 'createdAt', 'createdBy'],
   DutyMembers: ['dutySessionId', 'studentId', 'studentEmail', 'assignedAt'],
   Submissions: ['submissionId', 'assignmentId', 'studentId', 'barcode', 'submittedAt', 'method', 'operator', 'status'],
-  AuditLog: ['at', 'action', 'assignmentId', 'studentId', 'before', 'after', 'operator']
+  AuditLog: ['at', 'action', 'assignmentId', 'studentId', 'before', 'after', 'operator'],
+  Settings: ['key', 'value', 'description', 'updatedAt', 'updatedBy']
 };
 
 function doGet(e) {
@@ -252,8 +268,62 @@ function api_getBootstrap() {
     students: listStudents_(),
     assignments: listAssignments_(),
     dashboard: buildDashboard_(),
-    duty: getDutyAdminData_()
+    duty: getDutyAdminData_(),
+    settings: getSettings_()
   };
+}
+
+/** 教師画面から変更できる運用設定を保存する。 */
+function api_saveSettings(data) {
+  assertTeacher_();
+  ensureReady_();
+  data = data || {};
+  const text = (key, max, fallback) => {
+    const value = String(data[key] == null ? fallback : data[key]).trim();
+    if (!value || value.length > max) throw new Error(`${SETTING_DESCRIPTIONS[key]}は1～${max}文字で入力してください。`);
+    return value;
+  };
+  const optionalText = (key, max) => {
+    const value = String(data[key] == null ? '' : data[key]).trim();
+    if (value.length > max) throw new Error(`${SETTING_DESCRIPTIONS[key]}は${max}文字以内で入力してください。`);
+    return value;
+  };
+  const integer = (key, min, max) => {
+    const value = Number(data[key]);
+    if (!Number.isInteger(value) || value < min || value > max) throw new Error(`${SETTING_DESCRIPTIONS[key]}は${min}～${max}で設定してください。`);
+    return String(value);
+  };
+  const choice = (key, choices) => {
+    const value = String(data[key] || '').toUpperCase();
+    if (!choices.includes(value)) throw new Error(`${SETTING_DESCRIPTIONS[key]}の値が不正です。`);
+    return value;
+  };
+  const values = {
+    APP_NAME: text('APP_NAME', 40, DEFAULT_SETTINGS.APP_NAME),
+    SCHOOL_NAME: optionalText('SCHOOL_NAME', 60),
+    DEFAULT_GRADE: integer('DEFAULT_GRADE', 1, 6),
+    DEFAULT_CLASS: integer('DEFAULT_CLASS', 1, 9),
+    DEFAULT_SUBJECT: choice('DEFAULT_SUBJECT', ['国語', '算数', '理科', '社会', '外国語', 'その他']),
+    DEFAULT_ASSIGNMENT_STATUS: choice('DEFAULT_ASSIGNMENT_STATUS', ['OPEN', 'DRAFT']),
+    DEFAULT_STATUS_PERIOD: choice('DEFAULT_STATUS_PERIOD', ['TODAY', 'WEEK', 'MONTH', 'ALL']),
+    DUTY_DURATION_MINUTES: integer('DUTY_DURATION_MINUTES', 15, 480),
+    SCAN_AUTO_SUBMIT: data.SCAN_AUTO_SUBMIT === true || String(data.SCAN_AUTO_SUBMIT).toUpperCase() === 'TRUE' ? 'TRUE' : 'FALSE',
+    SCAN_BATCH_SIZE: integer('SCAN_BATCH_SIZE', 1, 100),
+    CAMERA_COOLDOWN_MS: integer('CAMERA_COOLDOWN_MS', 500, 10000),
+    PRINT_TITLE: text('PRINT_TITLE', 50, DEFAULT_SETTINGS.PRINT_TITLE),
+    PRINT_DEFAULT_MODE: choice('PRINT_DEFAULT_MODE', ['ALL', 'MISSING']),
+    PRINT_CONFIRMATION: data.PRINT_CONFIRMATION === true || String(data.PRINT_CONFIRMATION).toUpperCase() === 'TRUE' ? 'TRUE' : 'FALSE'
+  };
+  const sheet = getSheet_(SHEETS.SETTINGS), existing = valuesAsObjects_(sheet), byKey = {};
+  existing.forEach(r => byKey[String(r.key)] = r);
+  const now = new Date(), operator = currentEmail_();
+  Object.keys(values).forEach(key => byKey[key] = { key, value: values[key], description: SETTING_DESCRIPTIONS[key] || '', updatedAt: now, updatedBy: operator });
+  const rows = Object.keys(byKey).map(key => objectToRow_(byKey[key], HEADERS.Settings));
+  const clearRows = Math.max(sheet.getLastRow() - 1, rows.length);
+  if (clearRows) sheet.getRange(2, 1, clearRows, HEADERS.Settings.length).clearContent();
+  if (rows.length) sheet.getRange(2, 1, rows.length, HEADERS.Settings.length).setValues(rows);
+  logAudit_('SAVE_SETTINGS', '', '', '', JSON.stringify(values));
+  return { success: true, settings: getSettings_() };
 }
 
 function api_createDutySession(data) {
@@ -1055,6 +1125,28 @@ function ensureReady_() {
   const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
   ensureSheet_(ss, SHEETS.DUTY_SESSIONS, HEADERS.DutySessions);
   ensureSheet_(ss, SHEETS.DUTY_MEMBERS, HEADERS.DutyMembers);
+  ensureSheet_(ss, SHEETS.SETTINGS, HEADERS.Settings);
+}
+function getSettings_() {
+  const values = Object.assign({}, DEFAULT_SETTINGS);
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID), sheet = ss.getSheetByName(SHEETS.SETTINGS);
+  if (sheet) valuesAsObjects_(sheet).forEach(r => { const key = String(r.key || ''); if (key in values) values[key] = String(r.value == null ? '' : r.value); });
+  return {
+    APP_NAME: values.APP_NAME || DEFAULT_SETTINGS.APP_NAME,
+    SCHOOL_NAME: values.SCHOOL_NAME || '',
+    DEFAULT_GRADE: Number(values.DEFAULT_GRADE) || 6,
+    DEFAULT_CLASS: Number(values.DEFAULT_CLASS) || 3,
+    DEFAULT_SUBJECT: values.DEFAULT_SUBJECT || '国語',
+    DEFAULT_ASSIGNMENT_STATUS: values.DEFAULT_ASSIGNMENT_STATUS === 'DRAFT' ? 'DRAFT' : 'OPEN',
+    DEFAULT_STATUS_PERIOD: ['TODAY', 'WEEK', 'MONTH', 'ALL'].includes(values.DEFAULT_STATUS_PERIOD) ? values.DEFAULT_STATUS_PERIOD : 'MONTH',
+    DUTY_DURATION_MINUTES: Math.min(480, Math.max(15, Number(values.DUTY_DURATION_MINUTES) || 120)),
+    SCAN_AUTO_SUBMIT: toBool_(values.SCAN_AUTO_SUBMIT),
+    SCAN_BATCH_SIZE: Math.min(100, Math.max(1, Number(values.SCAN_BATCH_SIZE) || 50)),
+    CAMERA_COOLDOWN_MS: Math.min(10000, Math.max(500, Number(values.CAMERA_COOLDOWN_MS) || 2500)),
+    PRINT_TITLE: values.PRINT_TITLE || DEFAULT_SETTINGS.PRINT_TITLE,
+    PRINT_DEFAULT_MODE: values.PRINT_DEFAULT_MODE === 'MISSING' ? 'MISSING' : 'ALL',
+    PRINT_CONFIRMATION: toBool_(values.PRINT_CONFIRMATION)
+  };
 }
 function isPhase1Ready_() { return !!SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SHEETS.STUDENTS); }
 function getSheet_(name) { const s = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(name); if (!s) throw new Error(`${name} シートがありません。`); return s; }
