@@ -8,14 +8,15 @@ const DEFAULT_SETTINGS = {
   DEFAULT_SUBJECT: '国語', DEFAULT_ASSIGNMENT_STATUS: 'OPEN', DEFAULT_STATUS_PERIOD: 'MONTH',
   DUTY_DURATION_MINUTES: '120', SCAN_AUTO_SUBMIT: 'TRUE', SCAN_BATCH_SIZE: '50',
   CAMERA_COOLDOWN_MS: '2500', PRINT_TITLE: '宿題提出状況 個票',
-  PRINT_DEFAULT_MODE: 'ALL', PRINT_CONFIRMATION: 'TRUE'
+  PRINT_DEFAULT_MODE: 'ALL', PRINT_CONFIRMATION: 'TRUE', ABSENCE_COUNTS_AS_MISSING: 'TRUE'
 };
 const SETTING_DESCRIPTIONS = {
   APP_NAME: 'アプリ名', SCHOOL_NAME: '学校名', DEFAULT_GRADE: '課題登録の初期学年', DEFAULT_CLASS: '課題登録の初期組',
   DEFAULT_SUBJECT: '課題登録の初期教科', DEFAULT_ASSIGNMENT_STATUS: '課題登録の初期受付状態', DEFAULT_STATUS_PERIOD: '提出一覧の初期期間',
   DUTY_DURATION_MINUTES: '当番チェックの初期利用時間（分）', SCAN_AUTO_SUBMIT: '4桁入力時の自動受付', SCAN_BATCH_SIZE: '一度に保存するスキャン件数',
   CAMERA_COOLDOWN_MS: '同じコードを再読取できるまでの時間（ミリ秒）', PRINT_TITLE: '児童個票の表題',
-  PRINT_DEFAULT_MODE: '個票の初期表示内容', PRINT_CONFIRMATION: '個票に確認欄を表示'
+  PRINT_DEFAULT_MODE: '個票の初期表示内容', PRINT_CONFIRMATION: '個票に確認欄を表示',
+  ABSENCE_COUNTS_AS_MISSING: '欠席児童を未提出数に含める'
 };
 
 const SHEETS = {
@@ -27,6 +28,7 @@ const SHEETS = {
   DUTY_SESSIONS: 'DutySessions',
   DUTY_MEMBERS: 'DutyMembers',
   SUBMISSIONS: 'Submissions',
+  ABSENCES: 'Absences',
   AUDIT: 'AuditLog',
   SETTINGS: 'Settings'
 };
@@ -38,6 +40,7 @@ const HEADERS = {
   DutySessions: ['dutySessionId', 'assignmentId', 'startsAt', 'endsAt', 'status', 'createdAt', 'createdBy'],
   DutyMembers: ['dutySessionId', 'studentId', 'studentEmail', 'assignedAt'],
   Submissions: ['submissionId', 'assignmentId', 'studentId', 'barcode', 'submittedAt', 'method', 'operator', 'status'],
+  Absences: ['absenceId', 'date', 'studentId', 'barcode', 'status', 'recordedAt', 'operator'],
   AuditLog: ['at', 'action', 'assignmentId', 'studentId', 'before', 'after', 'operator'],
   Settings: ['key', 'value', 'description', 'updatedAt', 'updatedBy']
 };
@@ -133,14 +136,16 @@ function api_getMyStatus() {
     const targetAssignmentIds = new Set(valuesAsObjects_(getSheet_(SHEETS.TARGETS))
       .filter(r => String(r.studentId) === student.studentId)
       .map(r => String(r.assignmentId)));
+    const absenceKeys = getActiveAbsenceKeys_(), settings = getSettings_();
     const rows = listAssignments_()
       .filter(a => targetAssignmentIds.has(a.assignmentId))
       .map(a => ({
         assignmentId: a.assignmentId, date: a.date, dateLabel: a.dateLabel, subject: a.subject,
-        title: a.title, assignmentStatus: a.status, submitted: submittedIds.has(a.assignmentId)
+        title: a.title, assignmentStatus: a.status, submitted: submittedIds.has(a.assignmentId),
+        absent: !submittedIds.has(a.assignmentId) && absenceKeys.has(`${a.date}|${student.studentId}`)
       }));
     const dutySessions = access.role === 'STUDENT' ? getActiveDutySessionsFor_(student.studentId, email) : [];
-    return { success: true, email, barcode, name: student.name, role: access.role, rows, dutySessions, fetchedAt: new Date().toISOString() };
+    return { success: true, email, barcode, name: student.name, role: access.role, rows, dutySessions, absenceCountsAsMissing: settings.ABSENCE_COUNTS_AS_MISSING, fetchedAt: new Date().toISOString() };
   }
 
   const legacyRows = getLegacyStatusData_().slice(1)
@@ -150,7 +155,7 @@ function api_getMyStatus() {
       subject: '', title: String(r[5] || ''), assignmentStatus: 'CLOSED', submitted: isLegacySubmitted_(r[6])
     }))
     .sort((a, b) => b.date.localeCompare(a.date));
-  return { success: true, email, barcode, name: '', role: access.role, rows: legacyRows, dutySessions: [], fetchedAt: new Date().toISOString() };
+  return { success: true, email, barcode, name: '', role: access.role, rows: legacyRows, dutySessions: [], absenceCountsAsMissing: true, fetchedAt: new Date().toISOString() };
 }
 
 /** 初回のみ実行。既存データは消さず、新しいシートを追加する。 */
@@ -262,14 +267,16 @@ function api_getBootstrap() {
   if (!ready) return { ready: false, email: currentEmail_() };
   ensureReady_();
   ensureAllAssignmentTargets_();
+  const settings = getSettings_(), students = listStudents_(), assignments = listAssignments_();
   return {
     ready: true,
     email: currentEmail_(),
-    students: listStudents_(),
-    assignments: listAssignments_(),
-    dashboard: buildDashboard_(),
-    duty: getDutyAdminData_(),
-    settings: getSettings_()
+    students,
+    assignments,
+    dashboard: buildDashboard_(assignments, students),
+    dashboardDetails: buildDashboardOverview_(settings, assignments, students).assignments,
+    duty: getDutyAdminData_(assignments, students),
+    settings
   };
 }
 
@@ -312,7 +319,8 @@ function api_saveSettings(data) {
     CAMERA_COOLDOWN_MS: integer('CAMERA_COOLDOWN_MS', 500, 10000),
     PRINT_TITLE: text('PRINT_TITLE', 50, DEFAULT_SETTINGS.PRINT_TITLE),
     PRINT_DEFAULT_MODE: choice('PRINT_DEFAULT_MODE', ['ALL', 'MISSING']),
-    PRINT_CONFIRMATION: data.PRINT_CONFIRMATION === true || String(data.PRINT_CONFIRMATION).toUpperCase() === 'TRUE' ? 'TRUE' : 'FALSE'
+    PRINT_CONFIRMATION: data.PRINT_CONFIRMATION === true || String(data.PRINT_CONFIRMATION).toUpperCase() === 'TRUE' ? 'TRUE' : 'FALSE',
+    ABSENCE_COUNTS_AS_MISSING: data.ABSENCE_COUNTS_AS_MISSING === true || String(data.ABSENCE_COUNTS_AS_MISSING).toUpperCase() === 'TRUE' ? 'TRUE' : 'FALSE'
   };
   const sheet = getSheet_(SHEETS.SETTINGS), existing = valuesAsObjects_(sheet), byKey = {};
   existing.forEach(r => byKey[String(r.key)] = r);
@@ -803,10 +811,14 @@ function api_getDashboardOverview() {
   assertTeacher_();
   ensureReady_();
   ensureAllAssignmentTargets_();
-  const assignments = listAssignments_().filter(a => a.status === 'OPEN');
+  return buildDashboardOverview_(getSettings_());
+}
+
+function buildDashboardOverview_(settings, assignmentRows, studentRows) {
+  const assignments = (assignmentRows || listAssignments_()).filter(a => a.status === 'OPEN');
   const assignmentIds = new Set(assignments.map(a => a.assignmentId));
   const studentsById = {};
-  listStudents_().filter(s => s.isActive).forEach(s => studentsById[s.studentId] = s);
+  (studentRows || listStudents_()).filter(s => s.isActive).forEach(s => studentsById[s.studentId] = s);
   const targetsByAssignment = {};
   valuesAsObjects_(getSheet_(SHEETS.TARGETS)).forEach(row => {
     const assignmentId = String(row.assignmentId), studentId = String(row.studentId);
@@ -817,19 +829,24 @@ function api_getDashboardOverview() {
   const submittedKeys = new Set(valuesAsObjects_(getSheet_(SHEETS.SUBMISSIONS))
     .filter(row => String(row.status) === 'SUBMITTED' && assignmentIds.has(String(row.assignmentId)))
     .map(row => `${row.assignmentId}|${row.studentId}`));
+  const absenceKeys = getActiveAbsenceKeys_();
   const result = assignments.map(assignment => {
     const students = (targetsByAssignment[assignment.assignmentId] || []).map(id => studentsById[id]).filter(Boolean)
       .sort((a, b) => Number(a.number) - Number(b.number));
     const missingStudents = students.filter(student => !submittedKeys.has(`${assignment.assignmentId}|${student.studentId}`))
-      .map(student => ({ studentId: student.studentId, barcode: student.barcode, number: student.number, name: student.name }));
+      .map(student => ({ studentId: student.studentId, barcode: student.barcode, number: student.number, name: student.name, absent: absenceKeys.has(`${assignment.date}|${student.studentId}`) }));
+    const absent = missingStudents.filter(student => student.absent).length;
+    const missing = settings.ABSENCE_COUNTS_AS_MISSING ? missingStudents.length : missingStudents.length - absent;
     return Object.assign({}, assignment, {
       total: students.length,
       submitted: students.length - missingStudents.length,
-      missing: missingStudents.length,
+      absent,
+      excluded: settings.ABSENCE_COUNTS_AS_MISSING ? 0 : absent,
+      missing,
       missingStudents
     });
   });
-  return { assignments: result, fetchedAt: new Date() };
+  return { assignments: result, absenceCountsAsMissing: settings.ABSENCE_COUNTS_AS_MISSING, fetchedAt: new Date() };
 }
 
 /** 日付・課題・児童を横断して提出状況を確認する教師用一覧。 */
@@ -854,6 +871,7 @@ function api_getStatusOverview(filters) {
   const submittedKeys = new Set(valuesAsObjects_(getSheet_(SHEETS.SUBMISSIONS))
     .filter(r => String(r.status) === 'SUBMITTED')
     .map(r => `${r.assignmentId}|${r.studentId}`));
+  const absenceKeys = getActiveAbsenceKeys_(), settings = getSettings_();
   let rows = [];
   assignments.forEach(a => {
     Array.from(targetsByAssignment[a.assignmentId] || []).map(id => studentById[id]).filter(Boolean).forEach(s => {
@@ -862,15 +880,18 @@ function api_getStatusOverview(filters) {
         assignmentId: a.assignmentId, date: a.date, dateLabel: a.dateLabel, subject: a.subject,
         title: a.title, assignmentStatus: a.status, studentId: s.studentId, barcode: s.barcode,
         grade: s.grade, class: s.class, number: s.number, name: s.name,
-        submitted: submittedKeys.has(`${a.assignmentId}|${s.studentId}`)
+        submitted: submittedKeys.has(`${a.assignmentId}|${s.studentId}`),
+        absent: !submittedKeys.has(`${a.assignmentId}|${s.studentId}`) && absenceKeys.has(`${a.date}|${s.studentId}`)
       });
     });
   });
   rows.sort((a, b) => b.date.localeCompare(a.date) || a.title.localeCompare(b.title, 'ja') || a.barcode.localeCompare(b.barcode));
   const total = rows.length;
   const submitted = rows.filter(r => r.submitted).length;
+  const absent = rows.filter(r => r.absent).length;
+  const missing = rows.filter(r => !r.submitted && (settings.ABSENCE_COUNTS_AS_MISSING || !r.absent)).length;
   if (filters.missingOnly) rows = rows.filter(r => !r.submitted);
-  return { rows, total, submitted, missing: total - submitted, displayed: rows.length };
+  return { rows, total, submitted, absent, missing, displayed: rows.length, absenceCountsAsMissing: settings.ABSENCE_COUNTS_AS_MISSING };
 }
 
 function api_setManualSubmission(data) {
@@ -900,6 +921,41 @@ function api_setManualSubmission(data) {
     }
   }
   return { success: false, message: '提出記録が見つかりません。' };
+}
+
+/** 児童の欠席を日付単位で記録・解除する。 */
+function api_setAbsencesBatch(data) {
+  assertTeacher_();
+  ensureReady_();
+  data = data || {};
+  const date = normalizeDate_(data.date), absent = data.absent !== false;
+  const barcodes = [...new Set((data.barcodes || []).map(value => String(value).trim()).filter(value => /^\d{4}$/.test(value)))].slice(0, 200);
+  if (!date) throw new Error('欠席日を指定してください。');
+  if (!barcodes.length) throw new Error('欠席を記録する児童を選択してください。');
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const studentsByBarcode = {};
+    listStudents_().filter(student => student.isActive).forEach(student => studentsByBarcode[student.barcode] = student);
+    const unknown = barcodes.filter(barcode => !studentsByBarcode[barcode]);
+    if (unknown.length) throw new Error(`児童情報が見つかりません：${unknown.join('、')}`);
+    const activeKeys = getActiveAbsenceKeys_(), now = new Date(), operator = currentEmail_(), rows = [], auditRows = [];
+    barcodes.forEach(barcode => {
+      const student = studentsByBarcode[barcode], key = `${date}|${student.studentId}`, currentlyAbsent = activeKeys.has(key);
+      if (currentlyAbsent === absent) return;
+      rows.push([Utilities.getUuid(), date, student.studentId, barcode, absent ? 'ABSENT' : 'CANCELLED', now, operator]);
+      auditRows.push([now, absent ? 'MARK_ABSENT' : 'CLEAR_ABSENT', '', student.studentId, currentlyAbsent ? 'ABSENT' : '', absent ? 'ABSENT' : 'CANCELLED', operator]);
+    });
+    if (rows.length) {
+      const sheet = getSheet_(SHEETS.ABSENCES);
+      sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, HEADERS.Absences.length).setValues(rows);
+      const auditSheet = getSheet_(SHEETS.AUDIT);
+      auditSheet.getRange(auditSheet.getLastRow() + 1, 1, auditRows.length, HEADERS.AuditLog.length).setValues(auditRows);
+    }
+    return { success: true, changed: rows.length, date, absent };
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 /** 未提出をまとめて提出済みにする。一度の読込・一度の書込で通信待ちを減らす。 */
@@ -999,9 +1055,9 @@ function updateStatus(data) {
   return { success: false };
 }
 
-function buildDashboard_() {
-  const assignments = listAssignments_();
-  const students = listStudents_().filter(s => s.isActive);
+function buildDashboard_(assignmentRows, studentRows) {
+  const assignments = assignmentRows || listAssignments_();
+  const students = (studentRows || listStudents_()).filter(s => s.isActive);
   const open = assignments.filter(a => a.status === 'OPEN');
   const today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
   return { studentCount: students.length, openCount: open.length, todayCount: assignments.filter(a => a.date === today).length };
@@ -1014,6 +1070,15 @@ function listStudents_() {
     number: Number(r.number), name: String(r.name), studentEmail: String(r.studentEmail || ''),
     parentEmail: String(r.parentEmail || ''), isActive: toBool_(r.isActive)
   })).sort((a, b) => a.barcode.localeCompare(b.barcode));
+}
+
+function getActiveAbsenceKeys_() {
+  const latest = {};
+  valuesAsObjects_(getSheet_(SHEETS.ABSENCES)).forEach(row => {
+    const date = normalizeDate_(row.date), studentId = String(row.studentId || '');
+    if (date && studentId) latest[`${date}|${studentId}`] = String(row.status || '').toUpperCase();
+  });
+  return new Set(Object.keys(latest).filter(key => latest[key] === 'ABSENT'));
 }
 
 function listAssignments_() {
@@ -1093,10 +1158,10 @@ function getActiveDutySessionsFor_(studentId, email) {
     });
 }
 
-function getDutyAdminData_() {
+function getDutyAdminData_(assignmentRows, studentRows) {
   const assignments = {}, students = {};
-  listAssignments_().forEach(a => assignments[a.assignmentId] = a);
-  listStudents_().forEach(s => students[s.studentId] = s);
+  (assignmentRows || listAssignments_()).forEach(a => assignments[a.assignmentId] = a);
+  (studentRows || listStudents_()).forEach(s => students[s.studentId] = s);
   const membersBySession = {};
   valuesAsObjects_(getSheet_(SHEETS.DUTY_MEMBERS)).forEach(r => {
     const id = String(r.dutySessionId);
@@ -1224,6 +1289,7 @@ function ensureReady_() {
   ensureSheet_(ss, SHEETS.DUTY_SESSIONS, HEADERS.DutySessions);
   ensureSheet_(ss, SHEETS.DUTY_MEMBERS, HEADERS.DutyMembers);
   ensureSheet_(ss, SHEETS.SETTINGS, HEADERS.Settings);
+  ensureSheet_(ss, SHEETS.ABSENCES, HEADERS.Absences);
 }
 function getSettings_() {
   const values = Object.assign({}, DEFAULT_SETTINGS);
@@ -1243,7 +1309,8 @@ function getSettings_() {
     CAMERA_COOLDOWN_MS: Math.min(10000, Math.max(500, Number(values.CAMERA_COOLDOWN_MS) || 2500)),
     PRINT_TITLE: values.PRINT_TITLE || DEFAULT_SETTINGS.PRINT_TITLE,
     PRINT_DEFAULT_MODE: values.PRINT_DEFAULT_MODE === 'MISSING' ? 'MISSING' : 'ALL',
-    PRINT_CONFIRMATION: toBool_(values.PRINT_CONFIRMATION)
+    PRINT_CONFIRMATION: toBool_(values.PRINT_CONFIRMATION),
+    ABSENCE_COUNTS_AS_MISSING: toBool_(values.ABSENCE_COUNTS_AS_MISSING)
   };
 }
 function isPhase1Ready_() { return !!SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SHEETS.STUDENTS); }
