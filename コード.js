@@ -654,6 +654,38 @@ function api_closeAssignmentsBatch(data) {
   }
 }
 
+/** 課題管理から、選択した課題の状態をまとめて変更する。 */
+function api_setAssignmentStatusesBatch(data) {
+  assertTeacher_();
+  ensureReady_();
+  data = data || {};
+  const assignmentIds = [...new Set((data.assignmentIds || []).map(String).filter(Boolean))];
+  const status = String(data.status || '').toUpperCase();
+  if (!assignmentIds.length) throw new Error('変更する課題を選択してください。');
+  if (!['DRAFT', 'OPEN', 'CLOSED', 'ARCHIVED'].includes(status)) throw new Error('課題の状態が不正です。');
+  if (assignmentIds.length > 500) throw new Error('一度に変更できる課題は500件までです。');
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const sheet = getSheet_(SHEETS.ASSIGNMENTS), rows = valuesAsObjects_(sheet), wanted = new Set(assignmentIds), targets = [];
+    rows.forEach((row, index) => {
+      if (wanted.has(String(row.assignmentId))) targets.push({ row: index + 2, assignmentId: String(row.assignmentId), before: String(row.status) });
+    });
+    if (targets.length !== assignmentIds.length) throw new Error('選択した課題の一部が見つかりません。画面を更新してやり直してください。');
+    const changed = targets.filter(target => target.before !== status);
+    if (changed.length) {
+      const statusColumn = HEADERS.Assignments.indexOf('status') + 1;
+      sheet.getRangeList(changed.map(target => `${columnLetter_(statusColumn)}${target.row}`)).setValue(status);
+      const now = new Date(), operator = currentEmail_(), auditSheet = getSheet_(SHEETS.AUDIT);
+      const auditRows = changed.map(target => [now, 'BATCH_CHANGE_ASSIGNMENT_STATUS', target.assignmentId, '', target.before, status, operator]);
+      auditSheet.getRange(auditSheet.getLastRow() + 1, 1, auditRows.length, HEADERS.AuditLog.length).setValues(auditRows);
+    }
+    return { success: true, requestedCount: targets.length, changedCount: changed.length, status };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 function api_scanSubmission(data) {
   const batch = api_scanSubmissionsBatch({ assignmentId: data.assignmentId, barcodes: [data.barcode] });
   const result = batch.results[0] || { success: false, type: 'INVALID', message: '読み取りデータがありません。' };
@@ -764,6 +796,40 @@ function api_getAssignmentStatus(assignmentId) {
     .sort((a, b) => Number(a.number) - Number(b.number))
     .map(s => Object.assign({}, s, { submitted: submittedIds.has(s.studentId) }));
   return { assignment, rows, submitted: rows.filter(r => r.submitted).length, total: rows.length };
+}
+
+/** 「今日の状況」用。受付中課題の提出数と未提出児童を一括取得する。 */
+function api_getDashboardOverview() {
+  assertTeacher_();
+  ensureReady_();
+  ensureAllAssignmentTargets_();
+  const assignments = listAssignments_().filter(a => a.status === 'OPEN');
+  const assignmentIds = new Set(assignments.map(a => a.assignmentId));
+  const studentsById = {};
+  listStudents_().filter(s => s.isActive).forEach(s => studentsById[s.studentId] = s);
+  const targetsByAssignment = {};
+  valuesAsObjects_(getSheet_(SHEETS.TARGETS)).forEach(row => {
+    const assignmentId = String(row.assignmentId), studentId = String(row.studentId);
+    if (!assignmentIds.has(assignmentId) || !studentsById[studentId]) return;
+    if (!targetsByAssignment[assignmentId]) targetsByAssignment[assignmentId] = [];
+    targetsByAssignment[assignmentId].push(studentId);
+  });
+  const submittedKeys = new Set(valuesAsObjects_(getSheet_(SHEETS.SUBMISSIONS))
+    .filter(row => String(row.status) === 'SUBMITTED' && assignmentIds.has(String(row.assignmentId)))
+    .map(row => `${row.assignmentId}|${row.studentId}`));
+  const result = assignments.map(assignment => {
+    const students = (targetsByAssignment[assignment.assignmentId] || []).map(id => studentsById[id]).filter(Boolean)
+      .sort((a, b) => Number(a.number) - Number(b.number));
+    const missingStudents = students.filter(student => !submittedKeys.has(`${assignment.assignmentId}|${student.studentId}`))
+      .map(student => ({ studentId: student.studentId, barcode: student.barcode, number: student.number, name: student.name }));
+    return Object.assign({}, assignment, {
+      total: students.length,
+      submitted: students.length - missingStudents.length,
+      missing: missingStudents.length,
+      missingStudents
+    });
+  });
+  return { assignments: result, fetchedAt: new Date() };
 }
 
 /** 日付・課題・児童を横断して提出状況を確認する教師用一覧。 */
