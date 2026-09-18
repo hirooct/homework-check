@@ -3,6 +3,9 @@ const TEACHER_EMAILS = ['h953420@g.himeji-hyg.ed.jp'];
 const TEACHER_AUTH_CACHE_KEY = 'HOMEWORK_CHECK_TEACHER_AUTH';
 const TEACHER_PASSWORD_PROPERTY = 'HOMEWORK_CHECK_TEACHER_PASSWORD_HASH';
 const DEFAULT_TEACHER_PASSWORD = 'teacher';
+const DATA_SCHEMA_VERSION = '3';
+const DATA_SCHEMA_PROPERTY = 'HOMEWORK_CHECK_SCHEMA_VERSION';
+const DATA_CACHE_KEYS = { STUDENTS: 'HC_V3_STUDENTS', ASSIGNMENTS: 'HC_V3_ASSIGNMENTS', SETTINGS: 'HC_V3_SETTINGS' };
 const DEFAULT_SETTINGS = {
   APP_NAME: 'Homework Check', SCHOOL_NAME: '', DEFAULT_GRADE: '6', DEFAULT_CLASS: '3',
   DEFAULT_SUBJECT: '国語', DEFAULT_ASSIGNMENT_STATUS: 'OPEN', DEFAULT_STATUS_PERIOD: 'MONTH',
@@ -163,6 +166,8 @@ function setupPhase1() {
   assertTeacher_();
   const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
   Object.keys(HEADERS).forEach(name => ensureSheet_(ss, name, HEADERS[name]));
+  PropertiesService.getScriptProperties().setProperty(DATA_SCHEMA_PROPERTY, DATA_SCHEMA_VERSION);
+  invalidateDataCaches_();
   const imported = importLegacyStudentsIfEmpty_(ss);
   return { success: true, imported, message: imported ? `${imported}人の児童を取り込みました` : '初期設定が完了しました' };
 }
@@ -254,6 +259,7 @@ function api_runLegacyMigration(schoolYear) {
       success: true, addedStudents: newStudentRows.length, addedAssignments: newAssignmentRows.length,
       addedSubmissions: newSubmissionRows.length, skipped, invalid: plan.invalidRows.length
     };
+    invalidateDataCaches_(['STUDENTS', 'ASSIGNMENTS']);
     logAudit_('LEGACY_MIGRATION', '', '', '', JSON.stringify(result));
     return result;
   } finally {
@@ -262,6 +268,7 @@ function api_runLegacyMigration(schoolYear) {
 }
 
 function api_getBootstrap() {
+  const startedAt = Date.now();
   assertTeacher_();
   const ready = isPhase1Ready_();
   if (!ready) return { ready: false, email: currentEmail_() };
@@ -276,8 +283,22 @@ function api_getBootstrap() {
     dashboard: buildDashboard_(assignments, students),
     dashboardDetails: buildDashboardOverview_(settings, assignments, students).assignments,
     duty: getDutyAdminData_(assignments, students),
-    settings
+    settings,
+    performanceMs: Date.now() - startedAt
   };
+}
+
+/** 設定画面からデータ構造とキャッシュを安全に再構築する。 */
+function api_repairAndRebuildPerformanceData() {
+  assertTeacher_();
+  const startedAt = Date.now(), ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  Object.keys(HEADERS).forEach(name => ensureSheet_(ss, name, HEADERS[name]));
+  PropertiesService.getScriptProperties().setProperty(DATA_SCHEMA_PROPERTY, DATA_SCHEMA_VERSION);
+  invalidateDataCaches_();
+  ensureAllAssignmentTargets_();
+  const students = listStudents_(true), assignments = listAssignments_(true), settings = getSettings_(true);
+  logAudit_('REBUILD_PERFORMANCE_DATA', '', '', '', `students=${students.length},assignments=${assignments.length}`);
+  return { success: true, students: students.length, assignments: assignments.length, schemaVersion: DATA_SCHEMA_VERSION, performanceMs: Date.now() - startedAt, settings };
 }
 
 /** 教師画面から変更できる運用設定を保存する。 */
@@ -330,8 +351,9 @@ function api_saveSettings(data) {
   const clearRows = Math.max(sheet.getLastRow() - 1, rows.length);
   if (clearRows) sheet.getRange(2, 1, clearRows, HEADERS.Settings.length).clearContent();
   if (rows.length) sheet.getRange(2, 1, rows.length, HEADERS.Settings.length).setValues(rows);
+  invalidateDataCaches_(['SETTINGS']);
   logAudit_('SAVE_SETTINGS', '', '', '', JSON.stringify(values));
-  return { success: true, settings: getSettings_() };
+  return { success: true, settings: getSettings_(true) };
 }
 
 function api_createDutySession(data) {
@@ -439,6 +461,7 @@ function api_saveStudent(data) {
   } else {
     sheet.appendRow(objectToRow_(record, HEADERS.Students));
   }
+  invalidateDataCaches_(['STUDENTS']);
   logAudit_('SAVE_STUDENT', '', record.studentId, '', JSON.stringify(record));
   return { success: true, student: record };
 }
@@ -465,6 +488,7 @@ function api_createAssignment(data) {
   if (!record.targetGrade || !record.targetClass) throw new Error('対象の学年・組を選択してください。');
   getSheet_(SHEETS.ASSIGNMENTS).appendRow(objectToRow_(record, HEADERS.Assignments));
   createAssignmentTargets_(record);
+  invalidateDataCaches_(['ASSIGNMENTS']);
   logAudit_('CREATE_ASSIGNMENT', record.assignmentId, '', '', JSON.stringify(record));
   return { success: true, assignment: serialize_(record) };
 }
@@ -517,6 +541,7 @@ function api_createAssignmentsBatch(data) {
     const auditRows = created.map(a => [now, 'CREATE_ASSIGNMENT_BATCH', a.assignmentId, '', '', JSON.stringify(a), operator]);
     const auditSheet = getSheet_(SHEETS.AUDIT);
     auditSheet.getRange(auditSheet.getLastRow() + 1, 1, auditRows.length, HEADERS.AuditLog.length).setValues(auditRows);
+    invalidateDataCaches_(['ASSIGNMENTS']);
     return { success: true, created: serialize_(created), skipped };
   } finally {
     lock.releaseLock();
@@ -568,6 +593,7 @@ function api_updateAssignment(data) {
     deleteDataRowsWhere_(SHEETS.TARGETS, r => String(r.assignmentId) === assignmentId);
     createAssignmentTargets_(record);
   }
+  invalidateDataCaches_(['ASSIGNMENTS']);
   logAudit_('UPDATE_ASSIGNMENT', assignmentId, '', JSON.stringify(before), JSON.stringify(record));
   record.dateLabel = formatDateLabel_(record.date);
   return { success: true, assignment: serialize_(record) };
@@ -611,6 +637,7 @@ function api_deleteAssignment(data) {
     deleteDataRowsWhere_(SHEETS.SUBMISSIONS, r => String(r.assignmentId) === assignmentId);
     deleteDataRowsWhere_(SHEETS.TARGETS, r => String(r.assignmentId) === assignmentId);
     deleteDataRowsWhere_(SHEETS.ASSIGNMENTS, r => String(r.assignmentId) === assignmentId);
+    invalidateDataCaches_(['ASSIGNMENTS']);
     logAudit_('DELETE_ASSIGNMENT', assignmentId, '', JSON.stringify(impact.assignment), JSON.stringify(impact));
     return { success: true, deleted: impact };
   } finally {
@@ -628,6 +655,7 @@ function api_setAssignmentStatus(assignmentId, status) {
   if (index < 0) throw new Error('課題が見つかりません。');
   const before = rows[index].status;
   sheet.getRange(index + 2, HEADERS.Assignments.indexOf('status') + 1).setValue(status);
+  invalidateDataCaches_(['ASSIGNMENTS']);
   logAudit_('CHANGE_ASSIGNMENT_STATUS', assignmentId, '', before, status);
   return { success: true };
 }
@@ -656,6 +684,7 @@ function api_closeAssignmentsBatch(data) {
     const now = new Date(), operator = currentEmail_(), auditSheet = getSheet_(SHEETS.AUDIT);
     const auditRows = targets.map(target => [now, 'BATCH_CLOSE_ASSIGNMENT', target.assignmentId, '', 'OPEN', 'CLOSED', operator]);
     auditSheet.getRange(auditSheet.getLastRow() + 1, 1, auditRows.length, HEADERS.AuditLog.length).setValues(auditRows);
+    invalidateDataCaches_(['ASSIGNMENTS']);
     return { success: true, closedCount: targets.length, assignmentIds: targets.map(target => target.assignmentId) };
   } finally {
     lock.releaseLock();
@@ -687,6 +716,7 @@ function api_setAssignmentStatusesBatch(data) {
       const now = new Date(), operator = currentEmail_(), auditSheet = getSheet_(SHEETS.AUDIT);
       const auditRows = changed.map(target => [now, 'BATCH_CHANGE_ASSIGNMENT_STATUS', target.assignmentId, '', target.before, status, operator]);
       auditSheet.getRange(auditSheet.getLastRow() + 1, 1, auditRows.length, HEADERS.AuditLog.length).setValues(auditRows);
+      invalidateDataCaches_(['ASSIGNMENTS']);
     }
     return { success: true, requestedCount: targets.length, changedCount: changed.length, status };
   } finally {
@@ -831,32 +861,49 @@ function buildDashboardOverview_(settings, assignmentRows, studentRows) {
     .map(row => `${row.assignmentId}|${row.studentId}`));
   const absenceKeys = getActiveAbsenceKeys_();
   const result = assignments.map(assignment => {
-    const students = (targetsByAssignment[assignment.assignmentId] || []).map(id => studentsById[id]).filter(Boolean)
-      .sort((a, b) => Number(a.number) - Number(b.number));
-    const missingStudents = students.filter(student => !submittedKeys.has(`${assignment.assignmentId}|${student.studentId}`))
-      .map(student => ({ studentId: student.studentId, barcode: student.barcode, number: student.number, name: student.name, absent: absenceKeys.has(`${assignment.date}|${student.studentId}`) }));
-    const absent = missingStudents.filter(student => student.absent).length;
-    const missing = settings.ABSENCE_COUNTS_AS_MISSING ? missingStudents.length : missingStudents.length - absent;
+    const studentIds = (targetsByAssignment[assignment.assignmentId] || []).filter(id => studentsById[id]);
+    const unsubmittedIds = studentIds.filter(studentId => !submittedKeys.has(`${assignment.assignmentId}|${studentId}`));
+    const absent = unsubmittedIds.filter(studentId => absenceKeys.has(`${assignment.date}|${studentId}`)).length;
+    const missing = settings.ABSENCE_COUNTS_AS_MISSING ? unsubmittedIds.length : unsubmittedIds.length - absent;
     return Object.assign({}, assignment, {
-      total: students.length,
-      submitted: students.length - missingStudents.length,
+      total: studentIds.length,
+      submitted: studentIds.length - unsubmittedIds.length,
+      unsubmitted: unsubmittedIds.length,
       absent,
       excluded: settings.ABSENCE_COUNTS_AS_MISSING ? 0 : absent,
-      missing,
-      missingStudents
+      missing
     });
   });
   return { assignments: result, absenceCountsAsMissing: settings.ABSENCE_COUNTS_AS_MISSING, fetchedAt: new Date() };
 }
 
+/** 課題カードを開いたときだけ、未提出児童の詳細を取得する。 */
+function api_getAssignmentMissingDetails(assignmentIdValue) {
+  const startedAt = Date.now();
+  assertTeacher_();
+  ensureReady_();
+  const assignmentId = String(assignmentIdValue || ''), assignment = listAssignments_().find(item => item.assignmentId === assignmentId);
+  if (!assignment) throw new Error('課題が見つかりません。');
+  const targetIds = new Set(valuesAsObjects_(getSheet_(SHEETS.TARGETS)).filter(row => String(row.assignmentId) === assignmentId).map(row => String(row.studentId)));
+  const submittedIds = new Set(valuesAsObjects_(getSheet_(SHEETS.SUBMISSIONS)).filter(row => String(row.assignmentId) === assignmentId && String(row.status) === 'SUBMITTED').map(row => String(row.studentId)));
+  const absenceKeys = getActiveAbsenceKeys_();
+  const students = listStudents_().filter(student => student.isActive && targetIds.has(student.studentId) && !submittedIds.has(student.studentId))
+    .sort((a, b) => Number(a.number) - Number(b.number))
+    .map(student => ({ studentId: student.studentId, barcode: student.barcode, number: student.number, name: student.name, absent: absenceKeys.has(`${assignment.date}|${student.studentId}`) }));
+  return { assignmentId, students, fetchedAt: new Date(), performanceMs: Date.now() - startedAt };
+}
+
 /** 日付・課題・児童を横断して提出状況を確認する教師用一覧。 */
 function api_getStatusOverview(filters) {
+  const startedAt = Date.now();
   assertTeacher_();
   ensureReady_();
   ensureAllAssignmentTargets_();
   filters = filters || {};
   let assignments = listAssignments_();
   if (filters.date) assignments = assignments.filter(a => a.date === String(filters.date));
+  if (filters.dateFrom) assignments = assignments.filter(a => a.date >= String(filters.dateFrom));
+  if (filters.dateTo) assignments = assignments.filter(a => a.date <= String(filters.dateTo));
   if (filters.assignmentId) assignments = assignments.filter(a => a.assignmentId === String(filters.assignmentId));
 
   const students = listStudents_();
@@ -891,7 +938,7 @@ function api_getStatusOverview(filters) {
   const absent = rows.filter(r => r.absent).length;
   const missing = rows.filter(r => !r.submitted && (settings.ABSENCE_COUNTS_AS_MISSING || !r.absent)).length;
   if (filters.missingOnly) rows = rows.filter(r => !r.submitted);
-  return { rows, total, submitted, absent, missing, displayed: rows.length, absenceCountsAsMissing: settings.ABSENCE_COUNTS_AS_MISSING };
+  return { rows, total, submitted, absent, missing, displayed: rows.length, absenceCountsAsMissing: settings.ABSENCE_COUNTS_AS_MISSING, performanceMs: Date.now() - startedAt };
 }
 
 function api_setManualSubmission(data) {
@@ -1063,13 +1110,19 @@ function buildDashboard_(assignmentRows, studentRows) {
   return { studentCount: students.length, openCount: open.length, todayCount: assignments.filter(a => a.date === today).length };
 }
 
-function listStudents_() {
+function listStudents_(force) {
   if (!isPhase1Ready_()) return [];
-  return valuesAsObjects_(getSheet_(SHEETS.STUDENTS)).map(r => ({
+  if (!force) {
+    const cached = readJsonCache_(DATA_CACHE_KEYS.STUDENTS);
+    if (cached) return cached;
+  }
+  const rows = valuesAsObjects_(getSheet_(SHEETS.STUDENTS)).map(r => ({
     studentId: String(r.studentId), barcode: String(r.barcode), grade: Number(r.grade), class: Number(r.class),
     number: Number(r.number), name: String(r.name), studentEmail: String(r.studentEmail || ''),
     parentEmail: String(r.parentEmail || ''), isActive: toBool_(r.isActive)
   })).sort((a, b) => a.barcode.localeCompare(b.barcode));
+  writeJsonCache_(DATA_CACHE_KEYS.STUDENTS, rows, 180);
+  return rows;
 }
 
 function getActiveAbsenceKeys_() {
@@ -1081,13 +1134,19 @@ function getActiveAbsenceKeys_() {
   return new Set(Object.keys(latest).filter(key => latest[key] === 'ABSENT'));
 }
 
-function listAssignments_() {
+function listAssignments_(force) {
   if (!isPhase1Ready_()) return [];
-  return valuesAsObjects_(getSheet_(SHEETS.ASSIGNMENTS)).map(r => ({
+  if (!force) {
+    const cached = readJsonCache_(DATA_CACHE_KEYS.ASSIGNMENTS);
+    if (cached) return cached;
+  }
+  const rows = valuesAsObjects_(getSheet_(SHEETS.ASSIGNMENTS)).map(r => ({
     assignmentId: String(r.assignmentId), date: normalizeDate_(r.date), dateLabel: formatDateLabel_(r.date),
     subject: String(r.subject || ''), title: String(r.title), targetGrade: Number(r.targetGrade),
     targetClass: Number(r.targetClass), status: String(r.status)
   })).sort((a, b) => b.date.localeCompare(a.date));
+  writeJsonCache_(DATA_CACHE_KEYS.ASSIGNMENTS, rows, 120);
+  return rows;
 }
 
 function submissionCount_(assignmentId) {
@@ -1284,18 +1343,20 @@ function createAssignmentTargets_(assignment) {
 
 function ensureReady_() {
   if (!isPhase1Ready_()) throw new Error('先に「初期設定を実行」を押してください。');
-  ensureTargetsSheet_();
+  if (PropertiesService.getScriptProperties().getProperty(DATA_SCHEMA_PROPERTY) === DATA_SCHEMA_VERSION) return;
   const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
-  ensureSheet_(ss, SHEETS.DUTY_SESSIONS, HEADERS.DutySessions);
-  ensureSheet_(ss, SHEETS.DUTY_MEMBERS, HEADERS.DutyMembers);
-  ensureSheet_(ss, SHEETS.SETTINGS, HEADERS.Settings);
-  ensureSheet_(ss, SHEETS.ABSENCES, HEADERS.Absences);
+  Object.keys(HEADERS).forEach(name => ensureSheet_(ss, name, HEADERS[name]));
+  PropertiesService.getScriptProperties().setProperty(DATA_SCHEMA_PROPERTY, DATA_SCHEMA_VERSION);
 }
-function getSettings_() {
+function getSettings_(force) {
+  if (!force) {
+    const cached = readJsonCache_(DATA_CACHE_KEYS.SETTINGS);
+    if (cached) return cached;
+  }
   const values = Object.assign({}, DEFAULT_SETTINGS);
   const ss = SpreadsheetApp.openById(SPREADSHEET_ID), sheet = ss.getSheetByName(SHEETS.SETTINGS);
   if (sheet) valuesAsObjects_(sheet).forEach(r => { const key = String(r.key || ''); if (key in values) values[key] = String(r.value == null ? '' : r.value); });
-  return {
+  const settings = {
     APP_NAME: values.APP_NAME || DEFAULT_SETTINGS.APP_NAME,
     SCHOOL_NAME: values.SCHOOL_NAME || '',
     DEFAULT_GRADE: Number(values.DEFAULT_GRADE) || 6,
@@ -1312,6 +1373,8 @@ function getSettings_() {
     PRINT_CONFIRMATION: toBool_(values.PRINT_CONFIRMATION),
     ABSENCE_COUNTS_AS_MISSING: toBool_(values.ABSENCE_COUNTS_AS_MISSING)
   };
+  writeJsonCache_(DATA_CACHE_KEYS.SETTINGS, settings, 300);
+  return settings;
 }
 function isPhase1Ready_() { return !!SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SHEETS.STUDENTS); }
 function getSheet_(name) { const s = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(name); if (!s) throw new Error(`${name} シートがありません。`); return s; }
@@ -1364,6 +1427,24 @@ function isTeacherAuthenticated_() {
 function assertTeacher_() {
   if (!isTeacherAccount_(currentEmail_())) throw new Error('教師用機能を利用する権限がありません。');
   if (!isTeacherAuthenticated_()) throw new Error('教師用パスワードでログインしてください。');
+}
+function readJsonCache_(key) {
+  try {
+    const value = CacheService.getScriptCache().get(key);
+    return value ? JSON.parse(value) : null;
+  } catch (e) {
+    return null;
+  }
+}
+function writeJsonCache_(key, value, seconds) {
+  try {
+    const json = JSON.stringify(value);
+    if (json.length < 95000) CacheService.getScriptCache().put(key, json, seconds);
+  } catch (e) {}
+}
+function invalidateDataCaches_(keys) {
+  const names = (keys || Object.keys(DATA_CACHE_KEYS)).map(key => DATA_CACHE_KEYS[key] || key);
+  try { CacheService.getScriptCache().removeAll(names); } catch (e) { names.forEach(name => { try { CacheService.getScriptCache().remove(name); } catch (ignore) {} }); }
 }
 function parseBarcode_(code) { return { grade: Number(code[0]), classNo: Number(code[1]), number: Number(code.slice(2)) }; }
 function toBool_(v) { return v === true || String(v).toUpperCase() === 'TRUE' || String(v) === '1'; }
