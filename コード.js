@@ -624,6 +624,36 @@ function api_setAssignmentStatus(assignmentId, status) {
   return { success: true };
 }
 
+/** 今日の状況から、複数の受付中課題をまとめて停止する。 */
+function api_closeAssignmentsBatch(data) {
+  assertTeacher_();
+  ensureReady_();
+  data = data || {};
+  const assignmentIds = [...new Set((data.assignmentIds || []).map(String).filter(Boolean))];
+  if (!assignmentIds.length) throw new Error('受付停止する課題を選択してください。');
+  if (assignmentIds.length > 200) throw new Error('一度に停止できる課題は200件までです。');
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const sheet = getSheet_(SHEETS.ASSIGNMENTS), rows = valuesAsObjects_(sheet);
+    const wanted = new Set(assignmentIds), targets = [];
+    rows.forEach((row, index) => {
+      if (wanted.has(String(row.assignmentId))) targets.push({ row: index + 2, assignmentId: String(row.assignmentId), status: String(row.status) });
+    });
+    if (targets.length !== assignmentIds.length) throw new Error('選択した課題の一部が見つかりません。画面を更新してやり直してください。');
+    const unavailable = targets.filter(target => target.status !== 'OPEN');
+    if (unavailable.length) throw new Error('既に受付停止された課題が含まれています。画面を更新してやり直してください。');
+    const statusColumn = HEADERS.Assignments.indexOf('status') + 1;
+    sheet.getRangeList(targets.map(target => `${columnLetter_(statusColumn)}${target.row}`)).setValue('CLOSED');
+    const now = new Date(), operator = currentEmail_(), auditSheet = getSheet_(SHEETS.AUDIT);
+    const auditRows = targets.map(target => [now, 'BATCH_CLOSE_ASSIGNMENT', target.assignmentId, '', 'OPEN', 'CLOSED', operator]);
+    auditSheet.getRange(auditSheet.getLastRow() + 1, 1, auditRows.length, HEADERS.AuditLog.length).setValues(auditRows);
+    return { success: true, closedCount: targets.length, assignmentIds: targets.map(target => target.assignmentId) };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 function api_scanSubmission(data) {
   const batch = api_scanSubmissionsBatch({ assignmentId: data.assignmentId, barcodes: [data.barcode] });
   const result = batch.results[0] || { success: false, type: 'INVALID', message: '読み取りデータがありません。' };
