@@ -709,6 +709,90 @@ function api_closeAssignmentsBatch(data) {
   }
 }
 
+/** 課題名からカテゴリを判定する。漢ド＋ノートは「漢字ノート」を優先する。 */
+function inferAssignmentCategory_(title) {
+  const value = String(title || '').replace(/[\\s　]/g, '');
+  if (!value) return '';
+  if (value.includes('漢字ノート') || (value.includes('漢ド') && value.includes('ノート'))) return '漢字ノート';
+  if (value.includes('漢字ドリル') || value.includes('漢ド')) return '漢字ドリル';
+  if (value.includes('日記')) return '日記';
+  if (value.includes('計算スキル') || value.includes('計ス')) return '計算スキル';
+  if (value.includes('音読')) return '音読';
+  if (value.includes('自主学習') || value.includes('自学')) return '自主学習';
+  return '';
+}
+
+/** 選択した過去課題を課題名から自動分類する。 */
+function api_autoClassifyAssignmentCategories(data) {
+  assertTeacher_();
+  ensureReady_();
+  const assignmentIds = [...new Set(((data && data.assignmentIds) || []).map(String).filter(Boolean))];
+  if (!assignmentIds.length) throw new Error('自動分類する課題を選択してください。');
+  if (assignmentIds.length > 500) throw new Error('一度に分類できる課題は500件までです。');
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const sheet = getSheet_(SHEETS.ASSIGNMENTS), rows = valuesAsObjects_(sheet), wanted = new Set(assignmentIds), targets = [];
+    rows.forEach((row, index) => {
+      if (!wanted.has(String(row.assignmentId))) return;
+      const category = inferAssignmentCategory_(row.title);
+      targets.push({ row: index + 2, assignmentId: String(row.assignmentId), before: String(row.subject || ''), category });
+    });
+    if (targets.length !== assignmentIds.length) throw new Error('選択した課題の一部が見つかりません。画面を更新してやり直してください。');
+    const matched = targets.filter(target => target.category), changed = matched.filter(target => target.before !== target.category);
+    if (changed.length) {
+      const subjectColumn = HEADERS.Assignments.indexOf('subject') + 1;
+      const categoriesByRow = {};
+      changed.forEach(target => categoriesByRow[target.row] = target.category);
+      const categoryValues = rows.map((row, index) => [categoriesByRow[index + 2] || String(row.subject || '')]);
+      sheet.getRange(2, subjectColumn, categoryValues.length, 1).setValues(categoryValues);
+      const now = new Date(), operator = currentEmail_(), auditSheet = getSheet_(SHEETS.AUDIT);
+      const auditRows = changed.map(target => [now, 'AUTO_CLASSIFY_ASSIGNMENT_CATEGORY', target.assignmentId, '', target.before, target.category, operator]);
+      auditSheet.getRange(auditSheet.getLastRow() + 1, 1, auditRows.length, HEADERS.AuditLog.length).setValues(auditRows);
+      invalidateDataCaches_(['ASSIGNMENTS']);
+    }
+    return { success: true, requestedCount: targets.length, matchedCount: matched.length, changedCount: changed.length, unmatchedCount: targets.length - matched.length };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** 課題管理から、選択した過去課題のカテゴリをまとめて変更する。 */
+function api_setAssignmentCategoriesBatch(data) {
+  assertTeacher_();
+  ensureReady_();
+  data = data || {};
+  const assignmentIds = [...new Set((data.assignmentIds || []).map(String).filter(Boolean))];
+  const category = String(data.category || '').trim();
+  if (!assignmentIds.length) throw new Error('変更する課題を選択してください。');
+  if (!category) throw new Error('変更後のカテゴリを入力してください。');
+  if (category.length > 30) throw new Error('カテゴリは30文字以内で入力してください。');
+  if (assignmentIds.length > 500) throw new Error('一度に変更できる課題は500件までです。');
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const sheet = getSheet_(SHEETS.ASSIGNMENTS), rows = valuesAsObjects_(sheet), wanted = new Set(assignmentIds), targets = [];
+    rows.forEach((row, index) => {
+      if (wanted.has(String(row.assignmentId))) targets.push({ row: index + 2, assignmentId: String(row.assignmentId), before: String(row.subject || '') });
+    });
+    if (targets.length !== assignmentIds.length) throw new Error('選択した課題の一部が見つかりません。画面を更新してやり直してください。');
+    const changed = targets.filter(target => target.before !== category);
+    if (changed.length) {
+      const subjectColumn = HEADERS.Assignments.indexOf('subject') + 1;
+      const changedRows = new Set(changed.map(target => target.row));
+      const categoryValues = rows.map((row, index) => [changedRows.has(index + 2) ? category : String(row.subject || '')]);
+      sheet.getRange(2, subjectColumn, categoryValues.length, 1).setValues(categoryValues);
+      const now = new Date(), operator = currentEmail_(), auditSheet = getSheet_(SHEETS.AUDIT);
+      const auditRows = changed.map(target => [now, 'BATCH_CHANGE_ASSIGNMENT_CATEGORY', target.assignmentId, '', target.before, category, operator]);
+      auditSheet.getRange(auditSheet.getLastRow() + 1, 1, auditRows.length, HEADERS.AuditLog.length).setValues(auditRows);
+      invalidateDataCaches_(['ASSIGNMENTS']);
+    }
+    return { success: true, requestedCount: targets.length, changedCount: changed.length, unchangedCount: targets.length - changed.length, category };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 /** 課題管理から、選択した課題の状態をまとめて変更する。 */
 function api_setAssignmentStatusesBatch(data) {
   assertTeacher_();
