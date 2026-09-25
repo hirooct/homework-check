@@ -8,14 +8,14 @@ const DATA_SCHEMA_PROPERTY = 'HOMEWORK_CHECK_SCHEMA_VERSION';
 const DATA_CACHE_KEYS = { STUDENTS: 'HC_V3_STUDENTS', ASSIGNMENTS: 'HC_V3_ASSIGNMENTS', SETTINGS: 'HC_V3_SETTINGS' };
 const DEFAULT_SETTINGS = {
   APP_NAME: 'Homework Check', SCHOOL_NAME: '', DEFAULT_GRADE: '6', DEFAULT_CLASS: '3',
-  DEFAULT_SUBJECT: '国語', DEFAULT_ASSIGNMENT_STATUS: 'OPEN', DEFAULT_STATUS_PERIOD: 'MONTH',
+  DEFAULT_SUBJECT: '漢字ノート', DEFAULT_ASSIGNMENT_STATUS: 'OPEN', DEFAULT_STATUS_PERIOD: 'MONTH',
   DUTY_DURATION_MINUTES: '120', SCAN_AUTO_SUBMIT: 'TRUE', SCAN_BATCH_SIZE: '50',
   CAMERA_COOLDOWN_MS: '2500', PRINT_TITLE: '宿題提出状況 個票',
   PRINT_DEFAULT_MODE: 'ALL', PRINT_CONFIRMATION: 'TRUE', ABSENCE_COUNTS_AS_MISSING: 'TRUE'
 };
 const SETTING_DESCRIPTIONS = {
   APP_NAME: 'アプリ名', SCHOOL_NAME: '学校名', DEFAULT_GRADE: '課題登録の初期学年', DEFAULT_CLASS: '課題登録の初期組',
-  DEFAULT_SUBJECT: '課題登録の初期教科', DEFAULT_ASSIGNMENT_STATUS: '課題登録の初期受付状態', DEFAULT_STATUS_PERIOD: '提出一覧の初期期間',
+  DEFAULT_SUBJECT: '課題登録の初期カテゴリ', DEFAULT_ASSIGNMENT_STATUS: '課題登録の初期受付状態', DEFAULT_STATUS_PERIOD: '提出一覧の初期期間',
   DUTY_DURATION_MINUTES: '当番チェックの初期利用時間（分）', SCAN_AUTO_SUBMIT: '4桁入力時の自動受付', SCAN_BATCH_SIZE: '一度に保存するスキャン件数',
   CAMERA_COOLDOWN_MS: '同じコードを再読取できるまでの時間（ミリ秒）', PRINT_TITLE: '児童個票の表題',
   PRINT_DEFAULT_MODE: '個票の初期表示内容', PRINT_CONFIRMATION: '個票に確認欄を表示',
@@ -331,7 +331,7 @@ function api_saveSettings(data) {
     SCHOOL_NAME: optionalText('SCHOOL_NAME', 60),
     DEFAULT_GRADE: integer('DEFAULT_GRADE', 1, 6),
     DEFAULT_CLASS: integer('DEFAULT_CLASS', 1, 9),
-    DEFAULT_SUBJECT: choice('DEFAULT_SUBJECT', ['国語', '算数', '理科', '社会', '外国語', 'その他']),
+    DEFAULT_SUBJECT: text('DEFAULT_SUBJECT', 30, DEFAULT_SETTINGS.DEFAULT_SUBJECT),
     DEFAULT_ASSIGNMENT_STATUS: choice('DEFAULT_ASSIGNMENT_STATUS', ['OPEN', 'DRAFT']),
     DEFAULT_STATUS_PERIOD: choice('DEFAULT_STATUS_PERIOD', ['TODAY', 'WEEK', 'MONTH', 'ALL']),
     DUTY_DURATION_MINUTES: integer('DUTY_DURATION_MINUTES', 15, 480),
@@ -471,13 +471,16 @@ function api_createAssignment(data) {
   ensureReady_();
   const date = normalizeDate_(data.date);
   const title = String(data.title || '').trim();
+  const subject = String(data.subject || '').trim();
   if (!date) throw new Error('提出日を入力してください。');
+  if (!subject) throw new Error('カテゴリを入力してください。');
+  if (subject.length > 30) throw new Error('カテゴリは30文字以内で入力してください。');
   if (!title) throw new Error('課題名を入力してください。');
 
   const record = {
     assignmentId: Utilities.getUuid(),
     date,
-    subject: String(data.subject || '').trim(),
+    subject,
     title,
     targetGrade: Number(data.targetGrade),
     targetClass: Number(data.targetClass),
@@ -507,6 +510,8 @@ function api_createAssignmentsBatch(data) {
   if (!['DRAFT', 'OPEN', 'CLOSED', 'ARCHIVED'].includes(status)) throw new Error('課題の状態が不正です。');
   const cleaned = items.map(x => ({ subject: String(x.subject || '').trim(), title: String(x.title || '').trim() })).filter(x => x.title);
   if (!cleaned.length) throw new Error('課題を1件以上入力してください。');
+  if (cleaned.some(x => !x.subject)) throw new Error('すべての課題にカテゴリを入力してください。');
+  if (cleaned.some(x => x.subject.length > 30)) throw new Error('カテゴリは30文字以内で入力してください。');
 
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
@@ -555,9 +560,12 @@ function api_updateAssignment(data) {
   const assignmentId = String(data.assignmentId || '');
   const date = normalizeDate_(data.date);
   const title = String(data.title || '').trim();
+  const subject = String(data.subject || '').trim();
   const status = String(data.status || 'OPEN');
   if (!assignmentId) throw new Error('課題IDがありません。');
   if (!date) throw new Error('提出日を入力してください。');
+  if (!subject) throw new Error('カテゴリを入力してください。');
+  if (subject.length > 30) throw new Error('カテゴリは30文字以内で入力してください。');
   if (!title) throw new Error('課題名を入力してください。');
   if (!['DRAFT', 'OPEN', 'CLOSED', 'ARCHIVED'].includes(status)) throw new Error('課題の状態が不正です。');
 
@@ -569,7 +577,7 @@ function api_updateAssignment(data) {
   const record = {
     assignmentId,
     date,
-    subject: String(data.subject || '').trim(),
+    subject,
     title,
     targetGrade: Number(data.targetGrade),
     targetClass: Number(data.targetClass),
@@ -1373,7 +1381,7 @@ function getSettings_(force) {
     SCHOOL_NAME: values.SCHOOL_NAME || '',
     DEFAULT_GRADE: Number(values.DEFAULT_GRADE) || 6,
     DEFAULT_CLASS: Number(values.DEFAULT_CLASS) || 3,
-    DEFAULT_SUBJECT: values.DEFAULT_SUBJECT || '国語',
+    DEFAULT_SUBJECT: values.DEFAULT_SUBJECT || '漢字ノート',
     DEFAULT_ASSIGNMENT_STATUS: values.DEFAULT_ASSIGNMENT_STATUS === 'DRAFT' ? 'DRAFT' : 'OPEN',
     DEFAULT_STATUS_PERIOD: ['TODAY', 'WEEK', 'MONTH', 'ALL'].includes(values.DEFAULT_STATUS_PERIOD) ? values.DEFAULT_STATUS_PERIOD : 'MONTH',
     DUTY_DURATION_MINUTES: Math.min(480, Math.max(15, Number(values.DUTY_DURATION_MINUTES) || 120)),
