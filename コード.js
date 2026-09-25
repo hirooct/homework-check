@@ -680,7 +680,9 @@ function api_closeAssignmentsBatch(data) {
     const unavailable = targets.filter(target => target.status !== 'OPEN');
     if (unavailable.length) throw new Error('既に受付停止された課題が含まれています。画面を更新してやり直してください。');
     const statusColumn = HEADERS.Assignments.indexOf('status') + 1;
-    sheet.getRangeList(targets.map(target => `${columnLetter_(statusColumn)}${target.row}`)).setValue('CLOSED');
+    const targetRows = new Set(targets.map(target => target.row));
+    const statusValues = rows.map((row, index) => [targetRows.has(index + 2) ? 'CLOSED' : String(row.status)]);
+    sheet.getRange(2, statusColumn, statusValues.length, 1).setValues(statusValues);
     const now = new Date(), operator = currentEmail_(), auditSheet = getSheet_(SHEETS.AUDIT);
     const auditRows = targets.map(target => [now, 'BATCH_CLOSE_ASSIGNMENT', target.assignmentId, '', 'OPEN', 'CLOSED', operator]);
     auditSheet.getRange(auditSheet.getLastRow() + 1, 1, auditRows.length, HEADERS.AuditLog.length).setValues(auditRows);
@@ -712,7 +714,9 @@ function api_setAssignmentStatusesBatch(data) {
     const changed = targets.filter(target => target.before !== status);
     if (changed.length) {
       const statusColumn = HEADERS.Assignments.indexOf('status') + 1;
-      sheet.getRangeList(changed.map(target => `${columnLetter_(statusColumn)}${target.row}`)).setValue(status);
+      const changedRows = new Set(changed.map(target => target.row));
+      const statusValues = rows.map((row, index) => [changedRows.has(index + 2) ? status : String(row.status)]);
+      sheet.getRange(2, statusColumn, statusValues.length, 1).setValues(statusValues);
       const now = new Date(), operator = currentEmail_(), auditSheet = getSheet_(SHEETS.AUDIT);
       const auditRows = changed.map(target => [now, 'BATCH_CHANGE_ASSIGNMENT_STATUS', target.assignmentId, '', target.before, status, operator]);
       auditSheet.getRange(auditSheet.getLastRow() + 1, 1, auditRows.length, HEADERS.AuditLog.length).setValues(auditRows);
