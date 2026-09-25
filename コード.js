@@ -148,7 +148,7 @@ function api_getMyStatus() {
         absent: !submittedIds.has(a.assignmentId) && absenceKeys.has(`${a.date}|${student.studentId}`)
       }));
     const dutySessions = access.role === 'STUDENT' ? getActiveDutySessionsFor_(student.studentId, email) : [];
-    return { success: true, email, barcode, name: student.name, role: access.role, rows, dutySessions, absenceCountsAsMissing: settings.ABSENCE_COUNTS_AS_MISSING, fetchedAt: new Date().toISOString() };
+    return { success: true, email, barcode, name: student.name, role: access.role, rows, dutySessions, absenceCountsAsMissing: settings.ABSENCE_COUNTS_AS_MISSING, fetchedAt: new Date().toISOString().toISOString() };
   }
 
   const legacyRows = getLegacyStatusData_().slice(1)
@@ -158,7 +158,7 @@ function api_getMyStatus() {
       subject: '', title: String(r[5] || ''), assignmentStatus: 'CLOSED', submitted: isLegacySubmitted_(r[6])
     }))
     .sort((a, b) => b.date.localeCompare(a.date));
-  return { success: true, email, barcode, name: '', role: access.role, rows: legacyRows, dutySessions: [], absenceCountsAsMissing: true, fetchedAt: new Date().toISOString() };
+  return { success: true, email, barcode, name: '', role: access.role, rows: legacyRows, dutySessions: [], absenceCountsAsMissing: true, fetchedAt: new Date().toISOString().toISOString() };
 }
 
 /** 初回のみ実行。既存データは消さず、新しいシートを追加する。 */
@@ -677,17 +677,25 @@ function api_closeAssignmentsBatch(data) {
       if (wanted.has(String(row.assignmentId))) targets.push({ row: index + 2, assignmentId: String(row.assignmentId), status: String(row.status) });
     });
     if (targets.length !== assignmentIds.length) throw new Error('選択した課題の一部が見つかりません。画面を更新してやり直してください。');
-    const unavailable = targets.filter(target => target.status !== 'OPEN');
-    if (unavailable.length) throw new Error('既に受付停止された課題が含まれています。画面を更新してやり直してください。');
-    const statusColumn = HEADERS.Assignments.indexOf('status') + 1;
-    const targetRows = new Set(targets.map(target => target.row));
-    const statusValues = rows.map((row, index) => [targetRows.has(index + 2) ? 'CLOSED' : String(row.status)]);
-    sheet.getRange(2, statusColumn, statusValues.length, 1).setValues(statusValues);
-    const now = new Date(), operator = currentEmail_(), auditSheet = getSheet_(SHEETS.AUDIT);
-    const auditRows = targets.map(target => [now, 'BATCH_CLOSE_ASSIGNMENT', target.assignmentId, '', 'OPEN', 'CLOSED', operator]);
-    auditSheet.getRange(auditSheet.getLastRow() + 1, 1, auditRows.length, HEADERS.AuditLog.length).setValues(auditRows);
-    invalidateDataCaches_(['ASSIGNMENTS']);
-    return { success: true, closedCount: targets.length, assignmentIds: targets.map(target => target.assignmentId) };
+    const invalid = targets.filter(target => !['OPEN', 'CLOSED'].includes(target.status));
+    if (invalid.length) throw new Error('受付中ではない課題が含まれています。画面を更新してやり直してください。');
+    const openTargets = targets.filter(target => target.status === 'OPEN');
+    if (openTargets.length) {
+      const statusColumn = HEADERS.Assignments.indexOf('status') + 1;
+      const targetRows = new Set(openTargets.map(target => target.row));
+      const statusValues = rows.map((row, index) => [targetRows.has(index + 2) ? 'CLOSED' : String(row.status)]);
+      sheet.getRange(2, statusColumn, statusValues.length, 1).setValues(statusValues);
+      const now = new Date(), operator = currentEmail_(), auditSheet = getSheet_(SHEETS.AUDIT);
+      const auditRows = openTargets.map(target => [now, 'BATCH_CLOSE_ASSIGNMENT', target.assignmentId, '', 'OPEN', 'CLOSED', operator]);
+      auditSheet.getRange(auditSheet.getLastRow() + 1, 1, auditRows.length, HEADERS.AuditLog.length).setValues(auditRows);
+      invalidateDataCaches_(['ASSIGNMENTS']);
+    }
+    return {
+      success: true,
+      closedCount: openTargets.length,
+      alreadyClosedCount: targets.length - openTargets.length,
+      assignmentIds: openTargets.map(target => target.assignmentId)
+    };
   } finally {
     lock.releaseLock();
   }
@@ -878,7 +886,7 @@ function buildDashboardOverview_(settings, assignmentRows, studentRows) {
       missing
     });
   });
-  return { assignments: result, absenceCountsAsMissing: settings.ABSENCE_COUNTS_AS_MISSING, fetchedAt: new Date() };
+  return { assignments: result, absenceCountsAsMissing: settings.ABSENCE_COUNTS_AS_MISSING, fetchedAt: new Date().toISOString() };
 }
 
 /** 課題カードを開いたときだけ、未提出児童の詳細を取得する。 */
@@ -894,7 +902,7 @@ function api_getAssignmentMissingDetails(assignmentIdValue) {
   const students = listStudents_().filter(student => student.isActive && targetIds.has(student.studentId) && !submittedIds.has(student.studentId))
     .sort((a, b) => Number(a.number) - Number(b.number))
     .map(student => ({ studentId: student.studentId, barcode: student.barcode, number: student.number, name: student.name, absent: absenceKeys.has(`${assignment.date}|${student.studentId}`) }));
-  return { assignmentId, students, fetchedAt: new Date(), performanceMs: Date.now() - startedAt };
+  return { assignmentId, students, fetchedAt: new Date().toISOString(), performanceMs: Date.now() - startedAt };
 }
 
 /** 日付・課題・児童を横断して提出状況を確認する教師用一覧。 */
