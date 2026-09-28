@@ -148,7 +148,7 @@ function api_getMyStatus() {
         absent: !submittedIds.has(a.assignmentId) && absenceKeys.has(`${a.date}|${student.studentId}`)
       }));
     const dutySessions = access.role === 'STUDENT' ? getActiveDutySessionsFor_(student.studentId, email) : [];
-    return { success: true, email, barcode, name: student.name, role: access.role, rows, dutySessions, absenceCountsAsMissing: settings.ABSENCE_COUNTS_AS_MISSING, fetchedAt: new Date().toISOString().toISOString() };
+    return { success: true, email, barcode, name: student.name, role: access.role, rows, dutySessions, absenceCountsAsMissing: settings.ABSENCE_COUNTS_AS_MISSING, fetchedAt: new Date().toISOString() };
   }
 
   const legacyRows = getLegacyStatusData_().slice(1)
@@ -158,7 +158,7 @@ function api_getMyStatus() {
       subject: '', title: String(r[5] || ''), assignmentStatus: 'CLOSED', submitted: isLegacySubmitted_(r[6])
     }))
     .sort((a, b) => b.date.localeCompare(a.date));
-  return { success: true, email, barcode, name: '', role: access.role, rows: legacyRows, dutySessions: [], absenceCountsAsMissing: true, fetchedAt: new Date().toISOString().toISOString() };
+  return { success: true, email, barcode, name: '', role: access.role, rows: legacyRows, dutySessions: [], absenceCountsAsMissing: true, fetchedAt: new Date().toISOString() };
 }
 
 /** 初回のみ実行。既存データは消さず、新しいシートを追加する。 */
