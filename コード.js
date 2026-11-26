@@ -3,7 +3,7 @@ const TEACHER_EMAILS = ['h953420@g.himeji-hyg.ed.jp'];
 const TEACHER_AUTH_CACHE_KEY = 'HOMEWORK_CHECK_TEACHER_AUTH';
 const TEACHER_PASSWORD_PROPERTY = 'HOMEWORK_CHECK_TEACHER_PASSWORD_HASH';
 const DEFAULT_TEACHER_PASSWORD = 'teacher';
-const DATA_SCHEMA_VERSION = '3';
+const DATA_SCHEMA_VERSION = '4';
 const DATA_SCHEMA_PROPERTY = 'HOMEWORK_CHECK_SCHEMA_VERSION';
 const DATA_CACHE_KEYS = { STUDENTS: 'HC_V3_STUDENTS', ASSIGNMENTS: 'HC_V3_ASSIGNMENTS', SETTINGS: 'HC_V3_SETTINGS' };
 const DEFAULT_SETTINGS = {
@@ -32,6 +32,7 @@ const SHEETS = {
   DUTY_MEMBERS: 'DutyMembers',
   SUBMISSIONS: 'Submissions',
   ABSENCES: 'Absences',
+  REQUESTS: 'SubmissionRequests',
   AUDIT: 'AuditLog',
   SETTINGS: 'Settings'
 };
@@ -44,6 +45,7 @@ const HEADERS = {
   DutyMembers: ['dutySessionId', 'studentId', 'studentEmail', 'assignedAt'],
   Submissions: ['submissionId', 'assignmentId', 'studentId', 'barcode', 'submittedAt', 'method', 'operator', 'status'],
   Absences: ['absenceId', 'date', 'studentId', 'barcode', 'status', 'recordedAt', 'operator'],
+  SubmissionRequests: ['requestId', 'assignmentId', 'studentId', 'barcode', 'status', 'requestedAt', 'requestedBy', 'reviewedAt', 'reviewedBy', 'reviewNote', 'submissionId'],
   AuditLog: ['at', 'action', 'assignmentId', 'studentId', 'before', 'after', 'operator'],
   Settings: ['key', 'value', 'description', 'updatedAt', 'updatedBy']
 };
@@ -140,13 +142,22 @@ function api_getMyStatus() {
       .filter(r => String(r.studentId) === student.studentId)
       .map(r => String(r.assignmentId)));
     const absenceKeys = getActiveAbsenceKeys_(), settings = getSettings_();
+    const requestByAssignment = {};
+    valuesAsObjects_(getSheet_(SHEETS.REQUESTS))
+      .filter(r => String(r.studentId) === student.studentId)
+      .forEach(r => requestByAssignment[String(r.assignmentId)] = r);
     const rows = listAssignments_()
       .filter(a => targetAssignmentIds.has(a.assignmentId))
-      .map(a => ({
-        assignmentId: a.assignmentId, date: a.date, dateLabel: a.dateLabel, subject: a.subject,
-        title: a.title, assignmentStatus: a.status, submitted: submittedIds.has(a.assignmentId),
-        absent: !submittedIds.has(a.assignmentId) && absenceKeys.has(`${a.date}|${student.studentId}`)
-      }));
+      .map(a => {
+        const request = requestByAssignment[a.assignmentId] || {};
+        return {
+          assignmentId: a.assignmentId, date: a.date, dateLabel: a.dateLabel, subject: a.subject,
+          title: a.title, assignmentStatus: a.status, submitted: submittedIds.has(a.assignmentId),
+          absent: !submittedIds.has(a.assignmentId) && absenceKeys.has(`${a.date}|${student.studentId}`),
+          requestId: String(request.requestId || ''), requestStatus: String(request.status || ''),
+          requestedAt: isoDateTime_(request.requestedAt), reviewNote: String(request.reviewNote || '')
+        };
+      });
     const dutySessions = access.role === 'STUDENT' ? getActiveDutySessionsFor_(student.studentId, email) : [];
     return { success: true, email, barcode, name: student.name, role: access.role, rows, dutySessions, absenceCountsAsMissing: settings.ABSENCE_COUNTS_AS_MISSING, fetchedAt: new Date().toISOString() };
   }
@@ -159,6 +170,118 @@ function api_getMyStatus() {
     }))
     .sort((a, b) => b.date.localeCompare(a.date));
   return { success: true, email, barcode, name: '', role: access.role, rows: legacyRows, dutySessions: [], absenceCountsAsMissing: true, fetchedAt: new Date().toISOString() };
+}
+
+
+/** 児童本人が未提出課題の提出確認を教師へ依頼する。 */
+function api_createSubmissionRequest(data) {
+  ensureReady_();
+  const email = currentEmail_();
+  if (!email) throw new Error('学校のGoogleアカウントを確認できません。');
+  const access = findStudentAccessByEmail_(email);
+  if (access.role !== 'STUDENT' || !access.studentId) throw new Error('提出確認の依頼は児童本人のアカウントから行ってください。');
+  const assignmentId = String(data && data.assignmentId || '');
+  const assignment = listAssignments_().find(a => a.assignmentId === assignmentId);
+  const student = listStudents_().find(s => s.studentId === String(access.studentId) && s.isActive);
+  if (!assignment || !student) throw new Error('課題または児童情報が見つかりません。');
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    ensureAllAssignmentTargets_();
+    const isTarget = valuesAsObjects_(getSheet_(SHEETS.TARGETS))
+      .some(r => String(r.assignmentId) === assignmentId && String(r.studentId) === student.studentId);
+    if (!isTarget) throw new Error('この課題はあなたの提出対象ではありません。');
+    const alreadySubmitted = valuesAsObjects_(getSheet_(SHEETS.SUBMISSIONS))
+      .some(r => String(r.assignmentId) === assignmentId && String(r.studentId) === student.studentId && String(r.status) === 'SUBMITTED');
+    if (alreadySubmitted) return { success: true, alreadySubmitted: true, message: 'すでに提出済みになっています。' };
+
+    const requestSheet = getSheet_(SHEETS.REQUESTS);
+    const requestRows = valuesAsObjects_(requestSheet);
+    const pending = requestRows.find(r => String(r.assignmentId) === assignmentId && String(r.studentId) === student.studentId && String(r.status) === 'PENDING');
+    if (pending) return { success: true, alreadyPending: true, requestId: String(pending.requestId), message: 'すでに確認を依頼しています。' };
+
+    const now = new Date();
+    const record = {
+      requestId: Utilities.getUuid(), assignmentId, studentId: student.studentId, barcode: student.barcode,
+      status: 'PENDING', requestedAt: now, requestedBy: email, reviewedAt: '', reviewedBy: '',
+      reviewNote: '', submissionId: ''
+    };
+    requestSheet.appendRow(objectToRow_(record, HEADERS.SubmissionRequests));
+    logAudit_('CREATE_SUBMISSION_REQUEST', assignmentId, student.studentId, '', JSON.stringify({ requestId: record.requestId, status: 'PENDING' }));
+    return { success: true, requestId: record.requestId, status: 'PENDING', message: '先生に提出確認を依頼しました。' };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** 教師が提出確認依頼を承認または却下する。承認時だけ提出記録を作成する。 */
+function api_reviewSubmissionRequest(data) {
+  assertTeacher_();
+  ensureReady_();
+  const requestId = String(data && data.requestId || '');
+  const action = String(data && data.action || '').toUpperCase();
+  const reviewNote = String(data && data.reviewNote || '').trim().slice(0, 200);
+  if (!['APPROVE', 'REJECT'].includes(action)) throw new Error('処理内容が不正です。');
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const requestSheet = getSheet_(SHEETS.REQUESTS);
+    const requests = valuesAsObjects_(requestSheet);
+    const index = requests.findIndex(r => String(r.requestId) === requestId);
+    if (index < 0) throw new Error('確認依頼が見つかりません。');
+    const request = requests[index];
+    if (String(request.status) !== 'PENDING') throw new Error('この確認依頼はすでに処理されています。');
+
+    const assignment = listAssignments_().find(a => a.assignmentId === String(request.assignmentId));
+    const student = listStudents_().find(s => s.studentId === String(request.studentId));
+    if (!assignment || !student) throw new Error('課題または児童情報が見つかりません。');
+
+    const now = new Date(), operator = currentEmail_();
+    let submissionId = '', alreadySubmitted = false;
+    if (action === 'APPROVE') {
+      ensureAllAssignmentTargets_();
+      const isTarget = valuesAsObjects_(getSheet_(SHEETS.TARGETS))
+        .some(r => String(r.assignmentId) === assignment.assignmentId && String(r.studentId) === student.studentId);
+      if (!isTarget) throw new Error('この児童は課題の提出対象ではありません。');
+
+      const submissionSheet = getSheet_(SHEETS.SUBMISSIONS);
+      const existing = valuesAsObjects_(submissionSheet).find(r =>
+        String(r.assignmentId) === assignment.assignmentId &&
+        String(r.studentId) === student.studentId &&
+        String(r.status) === 'SUBMITTED'
+      );
+      if (existing) {
+        submissionId = String(existing.submissionId || '');
+        alreadySubmitted = true;
+      } else {
+        submissionId = Utilities.getUuid();
+        const submission = {
+          submissionId, assignmentId: assignment.assignmentId, studentId: student.studentId,
+          barcode: student.barcode, submittedAt: now, method: 'STUDENT_REQUEST',
+          operator, status: 'SUBMITTED'
+        };
+        submissionSheet.appendRow(objectToRow_(submission, HEADERS.Submissions));
+      }
+    }
+
+    const updated = Object.assign({}, request, {
+      status: action === 'APPROVE' ? 'APPROVED' : 'REJECTED',
+      reviewedAt: now, reviewedBy: operator, reviewNote, submissionId
+    });
+    requestSheet.getRange(index + 2, 1, 1, HEADERS.SubmissionRequests.length)
+      .setValues([objectToRow_(updated, HEADERS.SubmissionRequests)]);
+    logAudit_(action === 'APPROVE' ? 'APPROVE_SUBMISSION_REQUEST' : 'REJECT_SUBMISSION_REQUEST',
+      assignment.assignmentId, student.studentId, JSON.stringify({ requestId, status: 'PENDING' }),
+      JSON.stringify({ requestId, status: updated.status, reviewNote, submissionId, alreadySubmitted }));
+    return {
+      success: true, status: updated.status, alreadySubmitted,
+      message: action === 'APPROVE' ? `${student.name}さんを提出済みにしました。` : `${student.name}さんの依頼を却下しました。`
+    };
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 /** 初回のみ実行。既存データは消さず、新しいシートを追加する。 */
@@ -283,6 +406,7 @@ function api_getBootstrap() {
     dashboard: buildDashboard_(assignments, students),
     dashboardDetails: buildDashboardOverview_(settings, assignments, students).assignments,
     duty: getDutyAdminData_(assignments, students),
+    submissionRequests: getSubmissionRequestAdminData_(assignments, students),
     settings,
     performanceMs: Date.now() - startedAt
   };
@@ -622,6 +746,7 @@ function api_getAssignmentDeleteImpact(assignmentIdValue) {
     targetCount: valuesAsObjects_(getSheet_(SHEETS.TARGETS)).filter(r => String(r.assignmentId) === assignmentId).length,
     submittedCount: submissions.filter(r => String(r.status) === 'SUBMITTED').length,
     submissionHistoryCount: submissions.length,
+    requestCount: valuesAsObjects_(getSheet_(SHEETS.REQUESTS)).filter(r => String(r.assignmentId) === assignmentId).length,
     dutySessionCount: sessions.length,
     dutyMemberCount: valuesAsObjects_(getSheet_(SHEETS.DUTY_MEMBERS)).filter(r => sessionIds.has(String(r.dutySessionId))).length
   };
@@ -643,6 +768,7 @@ function api_deleteAssignment(data) {
     deleteDataRowsWhere_(SHEETS.DUTY_MEMBERS, r => sessionIds.has(String(r.dutySessionId)));
     deleteDataRowsWhere_(SHEETS.DUTY_SESSIONS, r => String(r.assignmentId) === assignmentId);
     deleteDataRowsWhere_(SHEETS.SUBMISSIONS, r => String(r.assignmentId) === assignmentId);
+    deleteDataRowsWhere_(SHEETS.REQUESTS, r => String(r.assignmentId) === assignmentId);
     deleteDataRowsWhere_(SHEETS.TARGETS, r => String(r.assignmentId) === assignmentId);
     deleteDataRowsWhere_(SHEETS.ASSIGNMENTS, r => String(r.assignmentId) === assignmentId);
     invalidateDataCaches_(['ASSIGNMENTS']);
@@ -1214,6 +1340,31 @@ function buildDashboard_(assignmentRows, studentRows) {
   return { studentCount: students.length, openCount: open.length, todayCount: assignments.filter(a => a.date === today).length };
 }
 
+
+function getSubmissionRequestAdminData_(assignmentRows, studentRows) {
+  const assignments = {}, students = {};
+  (assignmentRows || listAssignments_()).forEach(a => assignments[a.assignmentId] = a);
+  (studentRows || listStudents_()).forEach(s => students[s.studentId] = s);
+  return valuesAsObjects_(getSheet_(SHEETS.REQUESTS)).map(r => {
+    const assignment = assignments[String(r.assignmentId)] || {};
+    const student = students[String(r.studentId)] || {};
+    return {
+      requestId: String(r.requestId || ''), assignmentId: String(r.assignmentId || ''),
+      studentId: String(r.studentId || ''), barcode: String(r.barcode || student.barcode || ''),
+      status: String(r.status || ''), requestedAt: isoDateTime_(r.requestedAt),
+      requestedBy: String(r.requestedBy || ''), reviewedAt: isoDateTime_(r.reviewedAt),
+      reviewedBy: String(r.reviewedBy || ''), reviewNote: String(r.reviewNote || ''),
+      submissionId: String(r.submissionId || ''), assignmentTitle: String(assignment.title || ''),
+      assignmentDate: String(assignment.date || ''), assignmentDateLabel: String(assignment.dateLabel || ''),
+      subject: String(assignment.subject || ''), studentName: String(student.name || ''),
+      grade: Number(student.grade || 0), class: Number(student.class || 0), number: Number(student.number || 0)
+    };
+  }).sort((a, b) => {
+    const ap = a.status === 'PENDING' ? 0 : 1, bp = b.status === 'PENDING' ? 0 : 1;
+    return ap - bp || String(b.requestedAt).localeCompare(String(a.requestedAt));
+  }).slice(0, 500);
+}
+
 function listStudents_(force) {
   if (!isPhase1Ready_()) return [];
   if (!force) {
@@ -1561,6 +1712,7 @@ function normalizeDate_(v) {
 }
 function formatDateLabel_(v) { const s = normalizeDate_(v); if (!s) return String(v || ''); const p = s.split('-'); return `${Number(p[1])}月${Number(p[2])}日`; }
 function serialize_(obj) { return JSON.parse(JSON.stringify(obj)); }
+function isoDateTime_(value) { if (!value) return ''; const date = new Date(value); return isNaN(date) ? '' : date.toISOString(); }
 function logAudit_(action, assignmentId, studentId, before, after) {
   if (!isPhase1Ready_()) return;
   getSheet_(SHEETS.AUDIT).appendRow([new Date(), action, assignmentId, studentId, before, after, currentEmail_()]);
