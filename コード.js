@@ -284,6 +284,101 @@ function api_reviewSubmissionRequest(data) {
   }
 }
 
+
+/** 教師が複数の提出確認依頼をまとめて承認する。 */
+function api_reviewSubmissionRequestsBatch(data) {
+  assertTeacher_();
+  ensureReady_();
+  const requestIds = [...new Set(((data && data.requestIds) || []).map(String).filter(Boolean))].slice(0, 200);
+  if (!requestIds.length) throw new Error('承認する確認依頼を選択してください。');
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    ensureAllAssignmentTargets_();
+    const requestSheet = getSheet_(SHEETS.REQUESTS);
+    const requests = valuesAsObjects_(requestSheet);
+    const wanted = new Set(requestIds);
+    const assignmentById = {}, studentById = {};
+    listAssignments_().forEach(a => assignmentById[a.assignmentId] = a);
+    listStudents_().forEach(student => studentById[student.studentId] = student);
+    const targetKeys = new Set(valuesAsObjects_(getSheet_(SHEETS.TARGETS))
+      .map(r => `${r.assignmentId}|${r.studentId}`));
+
+    const submissionSheet = getSheet_(SHEETS.SUBMISSIONS);
+    const submissionByKey = {};
+    valuesAsObjects_(submissionSheet)
+      .filter(r => String(r.status) === 'SUBMITTED')
+      .forEach(r => submissionByKey[`${r.assignmentId}|${r.studentId}`] = String(r.submissionId || ''));
+
+    const now = new Date(), operator = currentEmail_(), newSubmissions = [], auditRows = [], results = [];
+    let approvedCount = 0, alreadySubmittedCount = 0;
+    requests.forEach((request, index) => {
+      const requestId = String(request.requestId || '');
+      if (!wanted.has(requestId)) return;
+      if (String(request.status) !== 'PENDING') {
+        results.push({ requestId, success: false, type: 'ALREADY_PROCESSED', message: 'すでに処理されています。' });
+        return;
+      }
+      const assignment = assignmentById[String(request.assignmentId)];
+      const student = studentById[String(request.studentId)];
+      if (!assignment || !student) {
+        results.push({ requestId, success: false, type: 'NOT_FOUND', message: '課題または児童情報が見つかりません。' });
+        return;
+      }
+      const key = `${assignment.assignmentId}|${student.studentId}`;
+      if (!targetKeys.has(key)) {
+        results.push({ requestId, success: false, type: 'OUT_OF_TARGET', message: `${student.name}さんは課題の対象ではありません。` });
+        return;
+      }
+
+      let submissionId = submissionByKey[key], alreadySubmitted = !!submissionId;
+      if (!submissionId) {
+        submissionId = Utilities.getUuid();
+        submissionByKey[key] = submissionId;
+        newSubmissions.push(objectToRow_({
+          submissionId, assignmentId: assignment.assignmentId, studentId: student.studentId,
+          barcode: student.barcode, submittedAt: now, method: 'STUDENT_REQUEST',
+          operator, status: 'SUBMITTED'
+        }, HEADERS.Submissions));
+      } else {
+        alreadySubmittedCount++;
+      }
+
+      requests[index] = Object.assign({}, request, {
+        status: 'APPROVED', reviewedAt: now, reviewedBy: operator,
+        reviewNote: '', submissionId
+      });
+      approvedCount++;
+      results.push({ requestId, success: true, studentName: student.name, alreadySubmitted });
+      auditRows.push([now, 'BATCH_APPROVE_SUBMISSION_REQUEST', assignment.assignmentId, student.studentId,
+        JSON.stringify({ requestId, status: 'PENDING' }),
+        JSON.stringify({ requestId, status: 'APPROVED', submissionId, alreadySubmitted }), operator]);
+    });
+
+    if (newSubmissions.length) {
+      submissionSheet.getRange(submissionSheet.getLastRow() + 1, 1, newSubmissions.length, HEADERS.Submissions.length)
+        .setValues(newSubmissions);
+    }
+    if (approvedCount) {
+      requestSheet.getRange(2, 1, requests.length, HEADERS.SubmissionRequests.length)
+        .setValues(requests.map(r => objectToRow_(r, HEADERS.SubmissionRequests)));
+    }
+    if (auditRows.length) {
+      const auditSheet = getSheet_(SHEETS.AUDIT);
+      auditSheet.getRange(auditSheet.getLastRow() + 1, 1, auditRows.length, HEADERS.AuditLog.length)
+        .setValues(auditRows);
+    }
+    return {
+      success: true, requestedCount: requestIds.length, approvedCount,
+      createdSubmissionCount: newSubmissions.length, alreadySubmittedCount,
+      skippedCount: requestIds.length - approvedCount, results
+    };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 /** 初回のみ実行。既存データは消さず、新しいシートを追加する。 */
 function setupPhase1() {
   assertTeacher_();
